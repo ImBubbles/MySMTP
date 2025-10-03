@@ -14,6 +14,10 @@ func (sb *StringBuilder) AppendRune(r rune) *StringBuilder {
 	return sb
 }
 
+func (sb *StringBuilder) AsString() string {
+	return sb.buffer
+}
+
 func NewStringBuilder() *StringBuilder {
 	return &StringBuilder{""}
 }
