@@ -28,8 +28,8 @@ func (b *SMTPBuilder) Command(val SMTPCommands) *SMTPBuilder {
 	return b
 }
 
-func (b *SMTPBuilder) Message(val SMTPBody) *SMTPBuilder {
-	b.buffer = b.buffer.Append(string(val))
+func (b *SMTPBuilder) Message(val string) *SMTPBuilder {
+	b.buffer = b.buffer.Append(val)
 	return b
 }
 

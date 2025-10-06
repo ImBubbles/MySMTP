@@ -2,7 +2,7 @@ package protocol
 
 import "MySMTP/util"
 
-// Server responses
+// Server messaging
 var (
 	PREPARED_S_ACCEPTANCE         string = NewSMTPBuilder().Code(CODE_READY).Message("Service Ready").Get()
 	PREPARED_S_BAD_COMMAND        string = NewSMTPBuilder().Code(CODE_INTERNAL_SERVER_ERROR).Message("Syntax error, command not understood").Get()
@@ -20,6 +20,22 @@ var (
 	PREPARED_S_RELAY_ONLY         string = NewSMTPBuilder().Code(CODE_FAILURE).Message("Relay server").Get()
 	PREPARED_S_START_MAIL         string = NewSMTPBuilder().Code(CODE_START_MAIL_INPUT).Message("Start mail input; end with <CRLF>.<CRLF>").Get()
 	PREPARED_S_BYE                string = NewSMTPBuilder().Code(CODE_QUIT).Message("Bye").Get()
-	// ADVERTISING
-	PREPARED_S_ADVERTISE_TLS string = NewSMTPBuilder().Code(CODE_ACKNOWLEDGE).Message("STARTTLS")
+)
+
+// ADVERTISING
+var (
+	PREPARED_S_ADVERTISE_TLS        string = NewSMTPBuilder().Code(CODE_ACKNOWLEDGE).Message("STARTTLS").Get()
+	PREPARED_S_ADVERTISE_SIZE       string = NewSMTPBuilder().Code(CODE_ACKNOWLEDGE).Message("SIZE %s").Get()
+	PREPARED_S_ADVERTISE_HELP       string = NewSMTPBuilder().Code(CODE_ACKNOWLEDGE).Message("HELP").Get()
+	PREPARED_S_ADVERTISE_AUTH       string = NewSMTPBuilder().Code(CODE_ACKNOWLEDGE).Message("AUTH %s").Get()
+	PREPARED_S_ADVERTISE_PIPELINING string = NewSMTPBuilder().Code(CODE_ACKNOWLEDGE).Message("PIPELINING").Get()
+	PREPARED_S_ADVERTISE_8BITMIME   string = NewSMTPBuilder().Code(CODE_ACKNOWLEDGE).Message("8BITMIME").Get()
+	PREPARED_S_ADVERTISE_HELLO      string = NewSMTPBuilder().Code(CODE_ACKNOWLEDGE).Message("%s HELLO").Get()
+)
+
+// Client messaging
+var (
+	PREPARED_C_EHLO     string = NewSMTPBuilder().Command(COMMAND_EHLO).Get()
+	PREPARED_C_QUIT     string = NewSMTPBuilder().Command(COMMAND_QUIT).Get()
+	PREPARED_C_STARTTLS string = NewSMTPBuilder().Command(COMMAND_STARTTLS).Get()
 )
