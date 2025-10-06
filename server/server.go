@@ -37,5 +37,5 @@ func Listen(server *Server) {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-	go handleConnection(conn)
+	go smtp.NewServerConn(conn)
 }
