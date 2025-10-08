@@ -22,6 +22,7 @@ type SMTPCommands string
 
 const (
 	COMMAND_EHLO      SMTPCommands = "EHLO"
+	COMMAND_HELO      SMTPCommands = "HELO"
 	COMMAND_MAIL      SMTPCommands = "MAIL"
 	COMMAND_MAIL_FROM SMTPCommands = "MAIL FROM"
 	COMMAND_RCPT      SMTPCommands = "RCPT"

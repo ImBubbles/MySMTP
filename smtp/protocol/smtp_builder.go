@@ -1,12 +1,12 @@
 package protocol
 
 import (
-	"MySMTP/util"
+	string2 "MySMTP/util/string"
 	"strconv"
 )
 
 type SMTPBuilder struct {
-	buffer *util.StringBuilder
+	buffer *string2.Builder
 }
 
 func (b *SMTPBuilder) CodeHyphen(val SMTPCode, hyphen bool) *SMTPBuilder {
@@ -44,5 +44,5 @@ func (b *SMTPBuilder) Get() string {
 }
 
 func NewSMTPBuilder() *SMTPBuilder {
-	return &SMTPBuilder{util.NewStringBuilder()}
+	return &SMTPBuilder{string2.NewStringBuilder()}
 }

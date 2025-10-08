@@ -1,12 +1,9 @@
 package main
 
-import (
-	"MySMTP/util"
-	"fmt"
-)
+import "MySMTP/server"
 
 func main() {
-	s := "gopher"
-	fmt.Printf("Hello and welcome, %s!\n", s)
+	socket := server.NewServer("0.0.0.0", 2525)
+	server.Listen(socket)
 
 }

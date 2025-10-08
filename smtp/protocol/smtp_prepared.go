@@ -1,6 +1,8 @@
 package protocol
 
-import "MySMTP/util"
+import (
+	string2 "MySMTP/util/string"
+)
 
 // Server messaging
 var (
@@ -13,8 +15,8 @@ var (
 	PREPARED_S_TLS_REQUIRED       string = NewSMTPBuilder().Code(CODE_BAD_SEQUENCE).Message("TLS connection required").Get()
 	PREPARED_S_AUTH_SUCCESS       string = NewSMTPBuilder().Code(CODE_AUTH_SUCCESS).Message("Auth successful").Get()
 	PREPARED_S_AUTH_FAILED        string = NewSMTPBuilder().Code(CODE_AUTH_FAILED).Message("Auth failed").Get()
-	PREPARED_S_USERNAME64         string = NewSMTPBuilder().Message(util.String64("Username:")).Get()
-	PREPARED_S_PASSWORD64         string = NewSMTPBuilder().Message(util.String64("Password:")).Get()
+	PREPARED_S_USERNAME64         string = NewSMTPBuilder().Message(string2.To64("Username:")).Get()
+	PREPARED_S_PASSWORD64         string = NewSMTPBuilder().Message(string2.To64("Password:")).Get()
 	PREPARED_S_TRANSACTION_FAILED string = NewSMTPBuilder().Code(CODE_FAILURE).Message("Transaction failed").Get()
 	PREPARED_S_RELAY_NOT_ALLOWED  string = NewSMTPBuilder().Code(CODE_FAILURE).Message("Cannot relay on this server").Get()
 	PREPARED_S_RELAY_ONLY         string = NewSMTPBuilder().Code(CODE_FAILURE).Message("Relay server").Get()
