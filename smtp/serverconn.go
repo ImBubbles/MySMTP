@@ -2,6 +2,7 @@ package smtp
 
 import (
 	"MySMTP/mail"
+	"MySMTP/util/conn"
 	stringutil "MySMTP/util/string"
 	"bufio"
 	"fmt"
@@ -12,7 +13,7 @@ import "MySMTP/smtp/protocol"
 
 // ServerConn handle client connections to the SMTP server
 type ServerConn struct {
-	client     net.Conn
+	client     *net.Conn
 	state      protocol.SMTPStates
 	reader     *bufio.Reader
 	relay      bool
@@ -22,11 +23,11 @@ type ServerConn struct {
 	mail       mail.Mail
 }
 
-func NewServerConn(conn net.Conn, relay bool, requireTLS bool) *ServerConn {
+func NewServerConn(conn *net.Conn, relay bool, requireTLS bool) *ServerConn {
 	serverConn := &ServerConn{
 		client:     conn,
 		state:      protocol.STATE_EHLO,
-		reader:     bufio.NewReader(conn),
+		reader:     bufio.NewReader(*conn),
 		relay:      relay,
 		requireTLS: requireTLS,
 		size:       0,
@@ -59,26 +60,15 @@ func (s *ServerConn) handle() {
 	}
 }
 
-func write(s *ServerConn, str string) error {
-	_, err := s.client.Write([]byte(str))
-	return err
-}
-
 func (s *ServerConn) write(str string) {
-	err := write(s, str)
+	err := conn.Write(s.client, str)
 	if err != nil {
 		panic(err)
 	}
 }
 
 func (s *ServerConn) read() string {
-	for {
-		message, err := s.reader.ReadString('\n')
-		if err != nil {
-			panic(err)
-		}
-		return message
-	}
+	return conn.Read(s.reader)
 }
 
 func (s *ServerConn) handleEHLO(line string) {
