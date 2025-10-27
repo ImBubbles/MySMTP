@@ -7,7 +7,7 @@ import (
 	"net"
 )
 
-// TODO: everything
+// TODO: everything and goon
 type ClientConn struct {
 	conn   net.Conn
 	state  protocol.SMTPStates
@@ -17,7 +17,7 @@ type ClientConn struct {
 
 func NewClientConn(conn net.Conn, mail mail.Mail) *ClientConn {
 	clientConn := &ClientConn{
-		client: conn,
+		conn:   conn,
 		state:  protocol.STATE_EHLO,
 		reader: bufio.NewReader(conn),
 		mail:   mail}

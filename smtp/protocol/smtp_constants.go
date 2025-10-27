@@ -1,5 +1,7 @@
 package protocol
 
+import "MySMTP/util/arraylist"
+
 type SMTPCode int16
 
 const (
@@ -66,3 +68,13 @@ const (
 	STATE_RCPT_TO   SMTPStates = 3
 	STATE_DATA      SMTPStates = 4
 )
+
+type SMTPFromFlags string
+
+const (
+	FLAG_SIZE     SMTPFromFlags = "SIZE"
+	FLAG_BODY     SMTPFromFlags = "BODY"
+	FLAG_SMTPUTF8 SMTPFromFlags = "SMTPUTF8"
+)
+
+var SMTP_VALID_FLAGS = arraylist.NewArrayList([]SMTPFromFlags{FLAG_SIZE, FLAG_BODY, FLAG_SMTPUTF8})

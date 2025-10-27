@@ -20,7 +20,7 @@ var (
 	PREPARED_S_TRANSACTION_FAILED string = NewSMTPBuilder().Code(CODE_FAILURE).Message("Transaction failed").Get()
 	PREPARED_S_RELAY_NOT_ALLOWED  string = NewSMTPBuilder().Code(CODE_FAILURE).Message("Cannot relay on this server").Get()
 	PREPARED_S_RELAY_ONLY         string = NewSMTPBuilder().Code(CODE_FAILURE).Message("Relay server").Get()
-	PREPARED_S_START_MAIL         string = NewSMTPBuilder().Code(CODE_START_MAIL_INPUT).Message("Start mail input; end with <CRLF>.<CRLF>").Get()
+	PREPARED_S_START_DATA         string = NewSMTPBuilder().Code(CODE_START_MAIL_INPUT).Message("Start mail input; end with <CRLF>.<CRLF>").Get()
 	PREPARED_S_BYE                string = NewSMTPBuilder().Code(CODE_QUIT).Message("Bye").Get()
 )
 
