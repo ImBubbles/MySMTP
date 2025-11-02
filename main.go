@@ -1,9 +1,24 @@
 package main
 
-import "MySMTP/server"
+import (
+	"MySMTP/config"
+	"MySMTP/server"
+	"fmt"
+	"os"
+)
 
 func main() {
-	socket := server.NewServer("0.0.0.0", 2525)
-	server.Listen(socket)
+	// Load configuration
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
+		os.Exit(1)
+	}
 
+	// Print configuration
+	cfg.PrintConfig()
+
+	// Create and start server
+	socket := server.NewServer(cfg.ServerAddress, cfg.ServerPort)
+	server.Listen(socket, cfg)
 }

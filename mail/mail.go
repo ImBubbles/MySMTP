@@ -43,3 +43,37 @@ func (m *Mail) AppendFlag(flags ...FromFlag) *Mail {
 	m.flags = append(m.flags, flags...)
 	return m
 }
+
+func (m *Mail) SetData(data string) *Mail {
+	m.data = data
+	return m
+}
+
+// Getter methods
+func (m *Mail) GetFrom() string {
+	return m.from
+}
+
+func (m *Mail) GetTo() []string {
+	return m.to
+}
+
+func (m *Mail) GetCC() []string {
+	return m.cc
+}
+
+func (m *Mail) GetBCC() []string {
+	return m.bcc
+}
+
+func (m *Mail) GetSubject() string {
+	return m.subject
+}
+
+func (m *Mail) GetData() string {
+	return m.data
+}
+
+func (m *Mail) GetFlags() []FromFlag {
+	return m.flags
+}
