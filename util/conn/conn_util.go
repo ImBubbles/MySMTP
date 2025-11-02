@@ -39,8 +39,10 @@ func Read(r *bufio.Reader) string {
 			// Timeout error - return empty string so caller can handle it
 			return ""
 		}
-		// Other errors - panic
-		panic(err)
+		// Other errors - return empty string instead of panicking
+		// Callers should check for empty string to detect errors
+		// Panicking in a library function is not good practice
+		return ""
 	}
 
 	// If the line is too long (isPrefix is true), we need to read more
@@ -53,8 +55,13 @@ func Read(r *bufio.Reader) string {
 				// EOF during reading - return what we have
 				break
 			}
-			// Other errors - panic
-			panic(err)
+			// Check if it's a timeout error
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Timeout during reading - return what we have
+				break
+			}
+			// Other errors - return what we have so far instead of panicking
+			break
 		}
 		fullLine = append(fullLine, line...)
 	}

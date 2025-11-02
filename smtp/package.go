@@ -29,7 +29,6 @@
 //
 //	// Create server connection with handlers
 //	conn, _ := net.Dial("tcp", "localhost:2525")
-//	connPtr := &conn
-//	smtp.NewServerConnWithHandlers(connPtr, config, handlers)
+//	smtp.NewServerConnWithHandlers(conn, config, handlers)
 package smtp
 

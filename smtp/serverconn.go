@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -13,7 +14,6 @@ import (
 	"github.com/ImBubbles/MySMTP/config"
 	"github.com/ImBubbles/MySMTP/mail"
 	"github.com/ImBubbles/MySMTP/smtp/protocol"
-	"github.com/ImBubbles/MySMTP/util/conn"
 	smtputil "github.com/ImBubbles/MySMTP/util/smtp"
 	stringutil "github.com/ImBubbles/MySMTP/util/string"
 	"github.com/ImBubbles/MySMTP/util/verify"
@@ -21,7 +21,7 @@ import (
 
 // ServerConn handle client connections to the SMTP server
 type ServerConn struct {
-	client         *net.Conn
+	client         net.Conn // Changed from *net.Conn to net.Conn - direct reference
 	state          protocol.SMTPStates
 	reader         *bufio.Reader
 	relay          bool
@@ -36,12 +36,12 @@ type ServerConn struct {
 }
 
 // NewServerConn creates a new server connection
-func NewServerConn(conn *net.Conn, cfg *config.Config) *ServerConn {
+func NewServerConn(conn net.Conn, cfg *config.Config) *ServerConn {
 	return NewServerConnWithHandlers(conn, cfg, NewHandlers())
 }
 
 // NewServerConnWithHandlers creates a new server connection with custom handlers
-func NewServerConnWithHandlers(conn *net.Conn, cfg *config.Config, handlers *Handlers) *ServerConn {
+func NewServerConnWithHandlers(conn net.Conn, cfg *config.Config, handlers *Handlers) *ServerConn {
 	// Create sender verifier with default settings
 	verifier := verify.NewEmailVerifier()
 	verifier.SetCheckFormat(true)
@@ -52,10 +52,16 @@ func NewServerConnWithHandlers(conn *net.Conn, cfg *config.Config, handlers *Han
 		handlers = NewHandlers()
 	}
 
+	// Set initial timeouts to prevent hanging
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(30 * time.Second)
+	}
+
 	serverConn := &ServerConn{
-		client:         conn,
+		client:         conn, // Direct assignment, no pointer
 		state:          protocol.STATE_EHLO,
-		reader:         bufio.NewReader(*conn),
+		reader:         bufio.NewReader(conn),
 		relay:          cfg.Relay,
 		requireTLS:     cfg.RequireTLS,
 		tlsConfig:      nil,
@@ -100,9 +106,13 @@ func (s *ServerConn) handle() {
 		command := strings.ToUpper(line)
 		command = stringutil.FirstWord(command)
 
-		// Ignore http
+		// Ignore http requests (web browsers, etc.)
+		// Just return bad command instead of panicking
 		if strings.Contains(command, "HTTP") {
-			panic(1)
+			if !s.write(protocol.PREPARED_S_BAD_COMMAND) {
+				return
+			}
+			continue
 		}
 		switch command {
 		case string(protocol.COMMAND_EHLO), string(protocol.COMMAND_HELO):
@@ -129,57 +139,98 @@ func (s *ServerConn) handle() {
 }
 
 func (s *ServerConn) write(str string) bool {
+	if s.client == nil {
+		return false
+	}
+
 	// Set write deadline to prevent indefinite blocking
-	(*s.client).SetWriteDeadline(time.Now().Add(30 * time.Second))
+	s.client.SetWriteDeadline(time.Now().Add(30 * time.Second))
 
 	// Print transmission to client (trim \r\n for cleaner output)
 	output := strings.TrimRight(str, "\r\n")
 	fmt.Printf("SERVER -> CLIENT: %s\n", output)
 
-	err := conn.Write(s.client, str)
-	if err != nil {
-		// Handle broken pipe and connection errors gracefully
-		// Broken pipe usually means client closed connection - this is normal, don't log as error
-		if netErr, ok := err.(*net.OpError); ok {
-			// Check if it's a broken pipe (EPIPE) - this is normal when client closes
-			if sysErr, ok := netErr.Err.(*os.SyscallError); ok && sysErr.Err == syscall.EPIPE {
-				// Client closed connection - this is expected, just return false
+	// Write directly to connection - no wrapper needed
+	data := []byte(str)
+	for len(data) > 0 {
+		n, err := s.client.Write(data)
+		if err != nil {
+			// Handle broken pipe and connection errors gracefully
+			if netErr, ok := err.(*net.OpError); ok {
+				// Check if it's a broken pipe (EPIPE) - this is normal when client closes
+				if sysErr, ok := netErr.Err.(*os.SyscallError); ok && sysErr.Err == syscall.EPIPE {
+					return false
+				}
+				// Other network errors
+				fmt.Fprintf(os.Stderr, "SERVER: Write error (connection broken): %v\n", netErr)
 				return false
 			}
-			// Other network errors - log but don't treat as critical
-			fmt.Fprintf(os.Stderr, "SERVER: Write error (connection broken): %v\n", netErr)
+			// Check for syscall errors (broken pipe on Unix, or other syscall errors)
+			if sysErr, ok := err.(*os.SyscallError); ok {
+				if sysErr.Err == syscall.EPIPE {
+					return false
+				}
+			}
+			// For any other write error, log and return false
+			fmt.Fprintf(os.Stderr, "SERVER: Write error: %v\n", err)
 			return false
 		}
-		// Check for syscall errors (broken pipe on Unix, or other syscall errors)
-		if sysErr, ok := err.(*os.SyscallError); ok {
-			if sysErr.Err == syscall.EPIPE {
-				// Client closed connection - this is expected
-				return false
-			}
-		}
-		// For any other write error, log and return false
-		fmt.Fprintf(os.Stderr, "SERVER: Write error: %v\n", err)
-		return false
+		data = data[n:]
 	}
 	return true
 }
 
 func (s *ServerConn) read() string {
-	// Set read deadline to prevent indefinite blocking
-	// SMTP servers should wait for client commands, but we need timeouts to handle dead connections
-	(*s.client).SetReadDeadline(time.Now().Add(30 * time.Second))
-
-	line := conn.Read(s.reader)
-
-	// Print transmission from client (trim \r\n for cleaner output)
-	output := strings.TrimRight(line, "\r\n")
-	if line != "" {
-		fmt.Printf("SERVER <- CLIENT: %s\n", output)
-	} else {
-		fmt.Printf("SERVER <- CLIENT: (empty - connection closed)\n")
+	if s.client == nil || s.reader == nil {
+		return ""
 	}
 
-	return line
+	// Set read deadline to prevent indefinite blocking
+	// Use longer timeout for SMTP (clients might take time to respond)
+	s.client.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+	// Use ReadLine directly instead of wrapper for better control
+	line, isPrefix, err := s.reader.ReadLine()
+	if err != nil {
+		if err == io.EOF {
+			fmt.Printf("SERVER <- CLIENT: (EOF - connection closed)\n")
+			return ""
+		}
+		// Check if it's a timeout error
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			// Timeout - might be normal, but log it
+			fmt.Printf("SERVER <- CLIENT: (timeout waiting for command)\n")
+			return ""
+		}
+		// Other errors
+		fmt.Printf("SERVER <- CLIENT: (read error: %v)\n", err)
+		return ""
+	}
+
+	// Handle long lines (shouldn't happen in SMTP, but be safe)
+	var fullLine []byte = line
+	for isPrefix {
+		line, isPrefix, err = s.reader.ReadLine()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				break
+			}
+			break
+		}
+		fullLine = append(fullLine, line...)
+	}
+
+	// Convert to string and append CRLF (SMTP standard)
+	lineStr := string(fullLine) + "\r\n"
+
+	// Print transmission from client (trim \r\n for cleaner output)
+	output := strings.TrimRight(lineStr, "\r\n")
+	fmt.Printf("SERVER <- CLIENT: %s\n", output)
+
+	return lineStr
 }
 
 func (s *ServerConn) handleEHLO(line string) {
@@ -588,20 +639,17 @@ func (s *ServerConn) handleStartTLS(line string) {
 	}
 
 	// Perform TLS handshake
-	tlsConn := tls.Server(*s.client, s.tlsConfig)
+	tlsConn := tls.Server(s.client, s.tlsConfig)
 	err := tlsConn.Handshake()
 	if err != nil {
-		// TLS handshake failed
+		// TLS handshake failed - log and return
+		fmt.Fprintf(os.Stderr, "SERVER: TLS handshake failed: %v\n", err)
 		return
 	}
 
 	// Update connection and reader with TLS-wrapped connection
-	// Convert *tls.Conn to *net.Conn by storing the interface value in a heap-allocated location
-	// Allocate space for the interface value by using a temporary struct field approach
-	netConn := net.Conn(tlsConn)
-	// Store in a new heap-allocated variable
-	heapConn := &netConn
-	s.client = heapConn
+	// Direct assignment - tls.Conn implements net.Conn
+	s.client = tlsConn
 	s.reader = bufio.NewReader(tlsConn)
 
 	// Reset state to EHLO - client must send EHLO again after STARTTLS
@@ -623,4 +671,19 @@ func (s *ServerConn) handleRset(line string) {
 	if !s.write(protocol.PREPARED_S_ACKNOWLEDGE) {
 		return
 	}
+}
+
+// Close closes the server connection and underlying client connection
+// This should be called when the connection is no longer needed
+// Note: The connection is typically closed automatically when handle() returns
+func (s *ServerConn) Close() error {
+	if s.client != nil {
+		return s.client.Close()
+	}
+	return nil
+}
+
+// GetConn returns the underlying connection (useful for external management)
+func (s *ServerConn) GetConn() net.Conn {
+	return s.client
 }

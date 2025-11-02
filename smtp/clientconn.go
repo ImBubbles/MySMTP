@@ -291,7 +291,11 @@ func (c *ClientConn) isSuccessCode(response string, expectedCode protocol.SMTPCo
 	if len(trimmed) >= 3 {
 		codeStr := trimmed[:3]
 		var code protocol.SMTPCode
-		fmt.Sscanf(codeStr, "%d", &code)
+		n, err := fmt.Sscanf(codeStr, "%d", &code)
+		if err != nil || n != 1 {
+			// Failed to parse code - return false
+			return false
+		}
 		return code == expectedCode
 	}
 	return false
@@ -308,7 +312,11 @@ func (c *ClientConn) parseResponseCode(response string) protocol.SMTPCode {
 
 	if len(trimmed) >= 3 {
 		var code protocol.SMTPCode
-		fmt.Sscanf(trimmed[:3], "%d", &code)
+		n, err := fmt.Sscanf(trimmed[:3], "%d", &code)
+		if err != nil || n != 1 {
+			// Failed to parse code - return error code
+			return protocol.CODE_INTERNAL_SERVER_ERROR
+		}
 		return code
 	}
 	return protocol.CODE_INTERNAL_SERVER_ERROR

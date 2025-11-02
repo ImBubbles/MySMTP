@@ -1,11 +1,12 @@
 package server
 
 import (
-	"github.com/ImBubbles/MySMTP/config"
-	"github.com/ImBubbles/MySMTP/smtp"
 	"fmt"
 	"net"
 	"os"
+
+	"github.com/ImBubbles/MySMTP/config"
+	"github.com/ImBubbles/MySMTP/smtp"
 )
 
 type Server struct {
@@ -33,18 +34,32 @@ func Listen(srv *Server, cfg *config.Config) {
 	for {
 		conn, err := srv.listener.Accept()
 		if err != nil {
+			// Log error but don't exit - continue accepting
+			// This handles temporary network errors gracefully
+			fmt.Fprintf(os.Stderr, "Failed to accept connection: %v\n", err)
 			continue
 		}
+		// Each connection is handled in its own goroutine
+		// The connection is closed by defer in handleConnection
 		go handleConnection(conn, cfg)
 	}
 }
 
 func handleConnection(conn net.Conn, cfg *config.Config) {
-	defer conn.Close()
-	connPtr := &conn
+	// Ensure connection is closed when done
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+
 	// Use default handlers if set, otherwise create new ones
 	handlers := GetDefaultHandlers()
-	smtp.NewServerConnWithHandlers(connPtr, cfg, handlers)
+
+	// Pass the connection directly - no pointer indirection needed
+	// The connection stays alive in this goroutine's scope
+	smtp.NewServerConnWithHandlers(conn, cfg, handlers)
+	// handle() is called inside NewServerConnWithHandlers and blocks until connection closes
 }
 
 // SetHandlers sets handlers for all new connections
