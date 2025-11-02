@@ -17,12 +17,13 @@ import (
 
 // ClientConn handle client-side SMTP connections to send emails
 type ClientConn struct {
-	conn      net.Conn
-	state     protocol.SMTPStates
-	reader    *bufio.Reader
-	mail      mail.Mail
-	tlsConfig *tls.Config
-	hostname  string
+	conn       net.Conn
+	state      protocol.SMTPStates
+	reader     *bufio.Reader
+	mail       mail.Mail
+	tlsConfig  *tls.Config
+	hostname   string // Client hostname (for EHLO)
+	serverName string // Server hostname (for TLS SNI)
 }
 
 func NewClientConn(conn net.Conn, mail mail.Mail) *ClientConn {
@@ -52,6 +53,12 @@ func NewClientConn(conn net.Conn, mail mail.Mail) *ClientConn {
 // SetTLSConfig sets the TLS configuration for STARTTLS
 func (c *ClientConn) SetTLSConfig(config *tls.Config) {
 	c.tlsConfig = config
+}
+
+// SetServerName sets the server hostname for TLS SNI (Server Name Indication)
+// This should be the MX server hostname (e.g., "gmail-smtp-in.l.google.com")
+func (c *ClientConn) SetServerName(serverName string) {
+	c.serverName = serverName
 }
 
 // NewClientConnFromJSON creates a new client connection from JSON bytes
@@ -152,13 +159,22 @@ func (c *ClientConn) parseResponseCode(response string) protocol.SMTPCode {
 	return protocol.CODE_INTERNAL_SERVER_ERROR
 }
 
+// sendEHLO sends EHLO command and optionally upgrades to TLS if available
+// allowTLS controls whether to attempt STARTTLS (used to prevent recursion)
 func (c *ClientConn) sendEHLO() {
+	c.sendEHLOWithTLS(true)
+}
+
+// sendEHLOWithTLS is the internal implementation that allows controlling TLS behavior
+func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) {
 	ehloCmd := fmt.Sprintf("%s %s\r\n", protocol.COMMAND_EHLO, c.hostname)
 	c.write(ehloCmd)
 
 	// Read server responses (may be multiple lines)
 	// SMTP multi-line responses use "-" as 4th character for continuation
 	// Final line has space (or sometimes nothing) as 4th character
+	extensions := make([]string, 0)
+
 	for {
 		response := c.read()
 		if response == "" {
@@ -178,30 +194,144 @@ func (c *ClientConn) sendEHLO() {
 		if len(response) >= 4 {
 			// Check the 4th character (index 3) after the 3-digit code
 			if response[3] == '-' {
-				// Continuation line, continue reading
+				// Continuation line - extract extension
+				// Format: "250-EXTENSION\r\n"
+				if len(response) > 5 {
+					extension := strings.TrimSpace(response[4:])
+					if extension != "" {
+						extensions = append(extensions, strings.ToUpper(extension))
+					}
+				}
 				continue
 			}
-			// If 4th char is space or the code is 250, it's the final line
-			if response[3] == ' ' || code == protocol.CODE_ACKNOWLEDGE {
-				break
-			}
-		} else if len(response) >= 3 {
-			// Short response, check if it's a valid 250 response
-			if code == protocol.CODE_ACKNOWLEDGE {
+			// If 4th char is space, it's the final line
+			if response[3] == ' ' {
 				break
 			}
 		}
 
-		// Safety: if we got here and code is 250, assume it's final
+		// If code is 250 (ACKNOWLEDGE), this is the final line (even without space)
+		// This handles cases like "250OK\r\n" where there's no space
 		if code == protocol.CODE_ACKNOWLEDGE {
 			break
 		}
 
-		// If we got a non-250 success code or unexpected response, break to avoid infinite loop
+		// If we got a valid success code (not 250), break anyway to avoid infinite loop
+		if code < protocol.CODE_INTERNAL_SERVER_ERROR && code != protocol.CODE_ACKNOWLEDGE {
+			break
+		}
+
+		// Safety: if we got here, break to avoid infinite loop
 		break
 	}
 
+	// Check if STARTTLS is supported and use it if available (only if allowTLS is true)
+	// After STARTTLS, we send EHLO again but don't check for STARTTLS again
+	if allowTLS {
+		supportsSTARTTLS := false
+		for _, ext := range extensions {
+			if strings.Contains(ext, "STARTTLS") {
+				supportsSTARTTLS = true
+				break
+			}
+		}
+
+		// If STARTTLS is available, use it
+		// Create default TLS config if none provided (required for many modern SMTP servers)
+		if supportsSTARTTLS {
+			if c.tlsConfig == nil {
+				// Create default TLS config for STARTTLS
+				c.tlsConfig = &tls.Config{
+					ServerName:         c.serverName,
+					InsecureSkipVerify: false,
+				}
+			}
+			c.sendSTARTTLS()
+			// After STARTTLS, must send EHLO again (but don't check for STARTTLS again)
+			c.sendEHLOWithTLS(false)
+			return
+		}
+	}
+
 	c.state = protocol.STATE_MAIL_FROM
+}
+
+// sendSTARTTLS sends STARTTLS command and upgrades connection to TLS
+func (c *ClientConn) sendSTARTTLS() {
+	// Send STARTTLS command
+	starttlsCmd := fmt.Sprintf("%s\r\n", protocol.COMMAND_STARTTLS)
+	c.write(starttlsCmd)
+
+	// Read server response (220 Ready to start TLS)
+	response := c.read()
+	if response == "" {
+		panic("STARTTLS failed: empty response")
+	}
+
+	code := c.parseResponseCode(response)
+	if code != protocol.CODE_READY {
+		panic(fmt.Sprintf("STARTTLS failed: %s", response))
+	}
+
+	// Perform TLS handshake
+	// Determine server name for TLS SNI (Server Name Indication)
+	// Use serverName if set, otherwise try to extract from connection
+	serverName := c.serverName
+	if serverName == "" {
+		// Try to get hostname from connection's remote address
+		if addr := c.conn.RemoteAddr(); addr != nil {
+			// For TLS, we typically want the hostname, not IP
+			// Extract hostname from network address (format: "hostname:port" or "ip:port")
+			addrStr := addr.String()
+			if colonIdx := strings.LastIndex(addrStr, ":"); colonIdx > 0 {
+				serverName = addrStr[:colonIdx]
+				// If it's an IP, we might need to resolve it, but for TLS SNI we prefer hostname
+				// For now, use what we have - the caller should set serverName if needed
+			}
+		}
+		if serverName == "" {
+			serverName = c.hostname
+		}
+	}
+
+	// Create TLS config with server name if not already set
+	tlsConfig := c.tlsConfig
+	if tlsConfig == nil {
+		// Use default TLS config if none provided
+		tlsConfig = &tls.Config{
+			ServerName:         serverName,
+			InsecureSkipVerify: false,
+		}
+	} else if tlsConfig.ServerName == "" {
+		// Clone config fields without copying mutex - create new config
+		// This avoids copying the sync.RWMutex which shouldn't be copied
+		tlsConfig = &tls.Config{
+			ServerName:               serverName,
+			InsecureSkipVerify:       tlsConfig.InsecureSkipVerify,
+			MinVersion:               tlsConfig.MinVersion,
+			MaxVersion:               tlsConfig.MaxVersion,
+			CipherSuites:             tlsConfig.CipherSuites,
+			PreferServerCipherSuites: tlsConfig.PreferServerCipherSuites,
+			ClientAuth:               tlsConfig.ClientAuth,
+			ClientCAs:                tlsConfig.ClientCAs,
+			RootCAs:                  tlsConfig.RootCAs,
+			Certificates:             tlsConfig.Certificates,
+			GetCertificate:           tlsConfig.GetCertificate,
+			GetClientCertificate:     tlsConfig.GetClientCertificate,
+		}
+	}
+
+	tlsConn := tls.Client(c.conn, tlsConfig)
+	err := tlsConn.Handshake()
+	if err != nil {
+		panic(fmt.Sprintf("TLS handshake failed: %v", err))
+	}
+
+	// Update connection and reader with TLS-wrapped connection
+	c.conn = tlsConn
+	c.reader = bufio.NewReader(tlsConn)
+
+	// State remains EHLO - client must send EHLO again after STARTTLS
 }
 
 func (c *ClientConn) sendMailFrom() {
@@ -365,4 +495,17 @@ func (c *ClientConn) sendQuit() {
 		// Log but don't panic - connection will close anyway
 		fmt.Fprintf(os.Stderr, "QUIT response unexpected: %s\n", response)
 	}
+}
+
+// Close closes the client connection
+func (c *ClientConn) Close() error {
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
+// GetConn returns the underlying connection (useful for external management)
+func (c *ClientConn) GetConn() net.Conn {
+	return c.conn
 }

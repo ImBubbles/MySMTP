@@ -19,9 +19,15 @@ func Read(r *bufio.Reader) string {
 	message, err := r.ReadString('\n')
 	if err != nil {
 		if err == io.EOF {
-			// EOF means connection closed, return empty string or handle gracefully
+			// EOF means connection closed, return empty string
 			return ""
 		}
+		// Check if it's a timeout error
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			// Timeout error - return empty string so caller can handle it
+			return ""
+		}
+		// Other errors - panic
 		panic(err)
 	}
 	return message
