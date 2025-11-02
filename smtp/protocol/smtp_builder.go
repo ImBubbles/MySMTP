@@ -40,7 +40,13 @@ func (b *SMTPBuilder) Domain() *SMTPBuilder {
 }
 
 func (b *SMTPBuilder) Get() string {
-	return b.buffer.AsString()
+	// SMTP requires all lines to end with \r\n
+	// Add it if not already present
+	str := b.buffer.AsString()
+	if len(str) < 2 || str[len(str)-2:] != "\r\n" {
+		return str + "\r\n"
+	}
+	return str
 }
 
 func NewSMTPBuilder() *SMTPBuilder {

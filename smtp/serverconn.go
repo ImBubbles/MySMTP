@@ -143,6 +143,12 @@ func (s *ServerConn) write(str string) bool {
 		return false
 	}
 
+	// Ensure SMTP protocol compliance: all lines must end with \r\n
+	// Add \r\n if not already present
+	if len(str) < 2 || str[len(str)-2:] != "\r\n" {
+		str += "\r\n"
+	}
+
 	// Set write deadline to prevent indefinite blocking
 	s.client.SetWriteDeadline(time.Now().Add(30 * time.Second))
 
@@ -150,7 +156,7 @@ func (s *ServerConn) write(str string) bool {
 	output := strings.TrimRight(str, "\r\n")
 	fmt.Printf("SERVER -> CLIENT: %s\n", output)
 
-	// Write directly to connection - no wrapper needed
+	// Write directly to connection - ensure all bytes are written
 	data := []byte(str)
 	for len(data) > 0 {
 		n, err := s.client.Write(data)
