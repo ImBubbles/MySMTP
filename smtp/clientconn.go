@@ -148,7 +148,8 @@ func (c *ClientConn) sendEHLO() {
 	c.write(ehloCmd)
 
 	// Read server responses (may be multiple lines)
-	// EHLO response starts with 250 and has multiple lines ending with 250 OK
+	// SMTP multi-line responses: continuation lines end with "-CRLF", final line ends with " CRLF"
+	// Format: "250-extension info\r\n" (continuation) or "250 OK\r\n" (final)
 	for {
 		response := c.read()
 		code := c.parseResponseCode(response)
@@ -158,16 +159,20 @@ func (c *ClientConn) sendEHLO() {
 			panic(fmt.Sprintf("EHLO failed: %s", response))
 		}
 
-		// Check if this is the last line (250 OK) - usually the last 250 response
-		if code == protocol.CODE_ACKNOWLEDGE {
-			// Check if this looks like the final OK line
-			responseUpper := strings.ToUpper(response)
-			if strings.Contains(responseUpper, "OK") || len(response) < 10 {
-				// Likely the final line
-				break
+		// Check if this is a continuation line (SMTP standard: 4th char is "-")
+		// Continuation format: "250-extension\r\n"
+		// Final line format: "250 OK\r\n" or "250 message\r\n"
+		if len(response) >= 4 {
+			// Check the 4th character (index 3) after the 3-digit code
+			if response[3] == '-' {
+				// Continuation line, continue reading more lines
+				continue
 			}
-			// Continue reading more extension lines
 		}
+
+		// If not a continuation line, this must be the final line
+		// Break to proceed to next SMTP command
+		break
 	}
 
 	c.state = protocol.STATE_MAIL_FROM
