@@ -641,8 +641,10 @@ func (s *ServerConn) processHeader(headerName string, headerValue string) {
 }
 
 func (s *ServerConn) handleStartTLS(line string) {
-	// STARTTLS can only be used in EHLO state (before authentication or mail transaction)
-	if s.state != protocol.STATE_EHLO {
+	// STARTTLS can only be used before authentication or mail transaction
+	// Allow it in STATE_EHLO or STATE_MAIL_FROM (after EHLO but before MAIL FROM is sent)
+	// According to RFC 3207, STARTTLS must be sent after EHLO and before any mail transaction
+	if s.state != protocol.STATE_EHLO && s.state != protocol.STATE_MAIL_FROM {
 		if !s.write(protocol.PREPARED_S_BAD_SEQUENCE) {
 			return
 		}
