@@ -477,6 +477,8 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) error {
 	// Extract server hostname from first EHLO response line
 	// Format: "250-hostname Hello client" or "250 hostname Hello client"
 	// The server hostname is usually the first word after the response code
+	// NOTE: We extract this for informational purposes, but DON'T automatically use it for
+	// TLS ServerName verification, as it may not match the certificate's Subject Alternative Names
 	if firstResponseLine != "" && len(firstResponseLine) > 4 {
 		// Skip response code (3 digits) and separator (- or space)
 		remainder := strings.TrimSpace(firstResponseLine[4:])
@@ -487,10 +489,12 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) error {
 			// No space found, use entire remainder (shouldn't happen but be safe)
 			serverHostname = remainder
 		}
-		// Store server hostname for TLS verification
-		// This ensures ServerName matches the certificate (e.g., mx.google.com)
+		// Store server hostname, but only use it for ServerName if explicitly set by user
+		// For TLS verification, we prefer using serverHost (the host we connected to)
+		// This works better for servers with self-signed or mismatched certificates
 		if serverHostname != "" && c.serverName == "" {
-			c.serverName = serverHostname
+			// Only set if we have no better option - prefer serverHost for ServerName
+			// This helps with certificate verification when EHLO hostname doesn't match cert
 		}
 	}
 
@@ -566,11 +570,12 @@ func (c *ClientConn) sendSTARTTLS() error {
 
 	// Perform TLS handshake
 	// Determine server name for TLS SNI (Server Name Indication)
-	// Priority: 1) serverName (explicitly set, may be extracted from EHLO), 2) serverHost (from DialSMTP), 3) connection address
-	// For Gmail and other modern SMTP servers, ServerName must match the certificate hostname (e.g., mx.google.com)
+	// Priority: 1) serverName (explicitly set by user via SetServerName), 2) serverHost (from DialSMTP), 3) connection address
+	// NOTE: We prefer serverHost over EHLO-extracted hostname to avoid certificate mismatch issues
+	// For servers with self-signed or mismatched certificates, use SetServerName() or SetTLSConfig() with InsecureSkipVerify
 	serverName := c.serverName
 	if serverName == "" {
-		// Use the server host from DialSMTP if available
+		// Prefer the server host from DialSMTP - this is usually what the certificate is valid for
 		if c.serverHost != "" {
 			serverName = c.serverHost
 		} else {
@@ -583,7 +588,7 @@ func (c *ClientConn) sendSTARTTLS() error {
 					// Check if it's an IP address
 					if net.ParseIP(hostPart) != nil {
 						// It's an IP - we can't use it for SNI
-						// Use hostname as fallback (but this won't work well for Gmail)
+						// Use hostname as fallback (but this won't work well for certificate verification)
 						serverName = c.hostname
 					} else {
 						// It's a hostname - use it for SNI
@@ -601,7 +606,7 @@ func (c *ClientConn) sendSTARTTLS() error {
 	tlsConfig := c.tlsConfig
 	if tlsConfig == nil {
 		// Use default TLS config if none provided
-		// For Gmail and others, ServerName should match the certificate (extracted from EHLO)
+		// For most servers, ServerName should be the host we connected to (serverHost)
 		tlsConfig = &tls.Config{
 			ServerName:         serverName,
 			InsecureSkipVerify: false,
@@ -632,6 +637,10 @@ func (c *ClientConn) sendSTARTTLS() error {
 
 	tlsConn := tls.Client(c.conn, tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
+		// Provide more helpful error message for certificate verification failures
+		if strings.Contains(err.Error(), "certificate") || strings.Contains(err.Error(), "x509") {
+			return fmt.Errorf("TLS handshake failed: %w (tip: for self-signed certificates, use SetTLSConfig() with InsecureSkipVerify: true)", err)
+		}
 		return fmt.Errorf("TLS handshake failed: %w", err)
 	}
 
