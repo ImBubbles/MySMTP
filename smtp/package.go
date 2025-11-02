@@ -29,6 +29,12 @@
 //
 //	// Create server connection with handlers
 //	conn, _ := net.Dial("tcp", "localhost:2525")
-//	smtp.NewServerConnWithHandlers(conn, config, handlers)
+//	// Optionally provide TLS config for STARTTLS (or nil to disable)
+//	var tlsConfig *tls.Config
+//	cert, err := tls.LoadX509KeyPair("cert.pem", "key.pem")
+//	if err == nil {
+//		tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}}
+//	}
+//	smtp.NewServerConnWithHandlers(conn, config, handlers, tlsConfig)
 package smtp
 

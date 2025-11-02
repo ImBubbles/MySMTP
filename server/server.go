@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"os"
@@ -56,9 +57,24 @@ func handleConnection(conn net.Conn, cfg *config.Config) {
 	// Use default handlers if set, otherwise create new ones
 	handlers := GetDefaultHandlers()
 
+	// Load TLS certificate if TLS is enabled
+	var tlsConfig *tls.Config
+	if cfg.TLSEnabled {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to load TLS certificate (%s, %s): %v\n", cfg.TLSCertFile, cfg.TLSKeyFile, err)
+			// Continue without TLS
+		} else {
+			tlsConfig = &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12, // Require TLS 1.2 or higher
+			}
+		}
+	}
+
 	// Pass the connection directly - no pointer indirection needed
 	// The connection stays alive in this goroutine's scope
-	smtp.NewServerConnWithHandlers(conn, cfg, handlers)
+	smtp.NewServerConnWithHandlers(conn, cfg, handlers, tlsConfig)
 	// handle() is called inside NewServerConnWithHandlers and blocks until connection closes
 }
 

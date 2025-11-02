@@ -37,11 +37,13 @@ type ServerConn struct {
 
 // NewServerConn creates a new server connection
 func NewServerConn(conn net.Conn, cfg *config.Config) *ServerConn {
-	return NewServerConnWithHandlers(conn, cfg, NewHandlers())
+	return NewServerConnWithHandlers(conn, cfg, NewHandlers(), nil)
 }
 
-// NewServerConnWithHandlers creates a new server connection with custom handlers
-func NewServerConnWithHandlers(conn net.Conn, cfg *config.Config, handlers *Handlers) *ServerConn {
+// NewServerConnWithHandlers creates a new server connection with custom handlers and optional TLS config
+// If tlsConfig is provided, STARTTLS will be advertised in EHLO and clients can upgrade the connection
+// Pass nil for tlsConfig if you don't want to enable STARTTLS
+func NewServerConnWithHandlers(conn net.Conn, cfg *config.Config, handlers *Handlers, tlsConfig *tls.Config) *ServerConn {
 	// Create sender verifier with default settings
 	verifier := verify.NewEmailVerifier()
 	verifier.SetCheckFormat(true)
@@ -64,7 +66,7 @@ func NewServerConnWithHandlers(conn net.Conn, cfg *config.Config, handlers *Hand
 		reader:         bufio.NewReader(conn),
 		relay:          cfg.Relay,
 		requireTLS:     cfg.RequireTLS,
-		tlsConfig:      nil,
+		tlsConfig:      tlsConfig, // Use provided TLS config
 		size:           0,
 		body:           protocol.BODY_8BITMIME,
 		config:         cfg,

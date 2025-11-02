@@ -18,6 +18,10 @@ type Config struct {
 	ClientPort     uint16
 	Relay          bool
 	RequireTLS     bool
+	// TLS configuration for STARTTLS
+	TLSEnabled bool   // Enable STARTTLS (advertises it in EHLO)
+	TLSCertFile string // Path to TLS certificate file (e.g., "cert.pem")
+	TLSKeyFile  string // Path to TLS private key file (e.g., "key.pem")
 }
 
 var globalConfig *Config
@@ -36,6 +40,10 @@ func LoadConfig() (*Config, error) {
 		ClientPort:     uint16(getEnvAsInt("SMTP_CLIENT_PORT", 587)),
 		Relay:          getEnvAsBool("SMTP_RELAY", false),
 		RequireTLS:     getEnvAsBool("SMTP_REQUIRE_TLS", false),
+		// TLS configuration
+		TLSEnabled:  getEnvAsBool("SMTP_TLS_ENABLED", false),
+		TLSCertFile: getEnv("SMTP_TLS_CERT_FILE", "cert.pem"),
+		TLSKeyFile:  getEnv("SMTP_TLS_KEY_FILE", "key.pem"),
 	}
 
 	globalConfig = config
@@ -141,6 +149,11 @@ func (c *Config) PrintConfig() {
 	fmt.Printf("  Domain: %s\n", c.ServerDomain)
 	fmt.Printf("  Relay: %v\n", c.Relay)
 	fmt.Printf("  Require TLS: %v\n", c.RequireTLS)
+	fmt.Printf("  TLS Enabled (STARTTLS): %v\n", c.TLSEnabled)
+	if c.TLSEnabled {
+		fmt.Printf("  TLS Cert File: %s\n", c.TLSCertFile)
+		fmt.Printf("  TLS Key File: %s\n", c.TLSKeyFile)
+	}
 	fmt.Printf("  Client Hostname: %s\n", c.ClientHostname)
 	fmt.Printf("  Client Port: %d\n", c.ClientPort)
 }
