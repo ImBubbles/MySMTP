@@ -84,6 +84,41 @@ func NewClientConnFromJSONMail(conn net.Conn, jsonMail *mail.JSONMail) *ClientCo
 	return NewClientConn(conn, *mail)
 }
 
+// DialSMTP creates a TCP connection to an SMTP server
+// It uses port 587 by default (submission port with STARTTLS), which is preferred over port 25
+// Port 25 is often blocked by ISPs and is mainly used for server-to-server communication
+// You can specify a custom port, or use the configured SMTP_CLIENT_PORT (default 587)
+// Returns a net.Conn ready for use with NewClientConn
+func DialSMTP(host string, port ...uint16) (net.Conn, error) {
+	var smtpPort uint16
+
+	// Use provided port, or config port, or default to 587 (submission with STARTTLS)
+	if len(port) > 0 && port[0] != 0 {
+		smtpPort = port[0]
+	} else {
+		cfg := config.GetConfig()
+		if cfg.ClientPort != 0 {
+			smtpPort = cfg.ClientPort
+		} else {
+			smtpPort = 587 // Default to port 587 (submission with STARTTLS)
+		}
+	}
+
+	address := net.JoinHostPort(host, fmt.Sprintf("%d", smtpPort))
+
+	// Create dialer with timeout to prevent hanging
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+	}
+
+	conn, err := dialer.Dial("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to SMTP server %s: %w", address, err)
+	}
+
+	return conn, nil
+}
+
 func (c *ClientConn) handle() {
 	// Read server greeting (220 Service Ready)
 	response := c.read()

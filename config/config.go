@@ -15,6 +15,7 @@ type Config struct {
 	ServerAddress  string
 	ServerDomain   string
 	ClientHostname string
+	ClientPort     uint16
 	Relay          bool
 	RequireTLS     bool
 }
@@ -32,6 +33,7 @@ func LoadConfig() (*Config, error) {
 		ServerAddress:  getEnv("SMTP_SERVER_ADDRESS", "0.0.0.0"),
 		ServerDomain:   getEnv("SMTP_SERVER_DOMAIN", "localhost"),
 		ClientHostname: getEnv("SMTP_CLIENT_HOSTNAME", "localhost"),
+		ClientPort:     uint16(getEnvAsInt("SMTP_CLIENT_PORT", 587)),
 		Relay:          getEnvAsBool("SMTP_RELAY", false),
 		RequireTLS:     getEnvAsBool("SMTP_REQUIRE_TLS", false),
 	}
@@ -140,5 +142,6 @@ func (c *Config) PrintConfig() {
 	fmt.Printf("  Relay: %v\n", c.Relay)
 	fmt.Printf("  Require TLS: %v\n", c.RequireTLS)
 	fmt.Printf("  Client Hostname: %s\n", c.ClientHostname)
+	fmt.Printf("  Client Port: %d\n", c.ClientPort)
 }
 
