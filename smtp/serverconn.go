@@ -381,40 +381,37 @@ func (s *ServerConn) handleMailFrom(line string) {
 	s.mail.SetFrom(address)
 
 	// Check if there are parameters after the address
-	if len(remainder) <= addEnd+1 {
-		if !s.write(protocol.PREPARED_S_ACKNOWLEDGE) {
-			return
-		}
-		return
-	}
+	if len(remainder) > addEnd+1 {
+		remainder = strings.ToUpper(remainder)
+		// get paramters now
+		params := strings.Split(strings.TrimSpace(remainder[addEnd+1:]), " ")
 
-	remainder = strings.ToUpper(remainder)
-	// get paramters now
-	params := strings.Split(strings.TrimSpace(remainder[addEnd+1:]), " ")
-
-	for _, param := range params {
-		param = strings.TrimSpace(param)
-		if param == "" {
-			continue
-		}
-		eqIndex := strings.Index(param, "=")
-		var key string
-		var value string = ""
-		if eqIndex == -1 {
-			// No value, just key
-			key = param
-		} else {
-			// Has value
-			key = strings.TrimSpace(param[:eqIndex])
-			value = strings.TrimSpace(param[eqIndex+1:])
-		}
-		if key != "" && protocol.SMTP_VALID_FLAGS.Contains(protocol.SMTPFromFlags(key)) {
-			// Valid flag
-			flag := mail.NewFlag(key, value)
-			s.mail.AppendFlag(mail.FromFlag(*flag))
+		for _, param := range params {
+			param = strings.TrimSpace(param)
+			if param == "" {
+				continue
+			}
+			eqIndex := strings.Index(param, "=")
+			var key string
+			var value string = ""
+			if eqIndex == -1 {
+				// No value, just key
+				key = param
+			} else {
+				// Has value
+				key = strings.TrimSpace(param[:eqIndex])
+				value = strings.TrimSpace(param[eqIndex+1:])
+			}
+			if key != "" && protocol.SMTP_VALID_FLAGS.Contains(protocol.SMTPFromFlags(key)) {
+				// Valid flag
+				flag := mail.NewFlag(key, value)
+				s.mail.AppendFlag(mail.FromFlag(*flag))
+			}
 		}
 	}
 
+	// Send acknowledgment and change state to RCPT_TO
+	// CRITICAL: Always set state to STATE_RCPT_TO regardless of whether parameters exist
 	if !s.write(protocol.PREPARED_S_ACKNOWLEDGE) {
 		return
 	}
