@@ -7,16 +7,19 @@ import (
 
 func CleanEmail(s string) string {
 	// Take '<me@email.com>' and make 'me@email.com'
-	var result string = ""
-	var pre int = strings.Index(s, "<")
-	if pre != -1 {
-		result = s[pre:]
+	pre := strings.Index(s, "<")
+	if pre == -1 {
+		// No opening bracket, return as is or empty
+		return s
 	}
-	var suf int = strings.Index(result, ">")
-	if suf != -1 {
-		result = s[:suf]
+	suf := strings.Index(s[pre:], ">")
+	if suf == -1 {
+		// No closing bracket, return as is
+		return s
 	}
-	return result
+	// Extract the email address between < and >
+	result := s[pre+1 : pre+suf]
+	return strings.TrimSpace(result)
 }
 
 func RemoveAll(s string, regex string) string {
@@ -26,11 +29,15 @@ func RemoveAll(s string, regex string) string {
 
 func CleanFromData(s string) (name, address string) {
 	spaceIndex := strings.Index(s, " ")
-	var hasName bool = spaceIndex != -1
 	name = ""
-	if hasName {
+	if spaceIndex != -1 {
+		// Has name part
 		name = RemoveAll(s[:spaceIndex], "\"")
+		name = strings.TrimSpace(name)
+		address = CleanEmail(s[spaceIndex+1:])
+	} else {
+		// No name, just address
+		address = CleanEmail(s)
 	}
-	address = CleanEmail(s[spaceIndex+1:])
 	return
 }

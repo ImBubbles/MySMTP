@@ -63,10 +63,10 @@ type SMTPStates int
 const (
 	STATE_DEAD      SMTPStates = iota
 	STATE_EHLO      SMTPStates = 1
-	STATE_AUTH      SMTPStates = 1
-	STATE_MAIL_FROM SMTPStates = 2
-	STATE_RCPT_TO   SMTPStates = 3
-	STATE_DATA      SMTPStates = 4
+	STATE_AUTH      SMTPStates = 2
+	STATE_MAIL_FROM SMTPStates = 3
+	STATE_RCPT_TO   SMTPStates = 4
+	STATE_DATA      SMTPStates = 5
 )
 
 type SMTPFromFlags string

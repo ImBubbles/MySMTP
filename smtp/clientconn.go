@@ -280,12 +280,13 @@ func (c *ClientConn) writeBody(body string) {
 
 	// Handle SMTP transparency: lines starting with "." need to have "." prepended
 	lines := strings.Split(body, "\n")
-	for _, line := range lines {
+	lastIndex := len(lines) - 1
+	for i, line := range lines {
 		// Remove trailing \r if present (handle both \r\n and \n)
 		line = strings.TrimRight(line, "\r")
 
-		// Skip empty lines at the end
-		if line == "" && len(lines) > 0 {
+		// Skip empty lines at the end (but not if it's the only line)
+		if line == "" && i == lastIndex && len(lines) > 1 {
 			continue
 		}
 

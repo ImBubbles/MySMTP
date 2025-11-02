@@ -1,34 +1,35 @@
 package smtp
 
 import (
-	"github.com/ImBubbles/MySMTP/config"
-	"github.com/ImBubbles/MySMTP/mail"
-	"github.com/ImBubbles/MySMTP/util/conn"
-	smtputil "github.com/ImBubbles/MySMTP/util/smtp"
-	stringutil "github.com/ImBubbles/MySMTP/util/string"
-	"github.com/ImBubbles/MySMTP/util/verify"
 	"bufio"
 	"crypto/tls"
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/ImBubbles/MySMTP/config"
+	"github.com/ImBubbles/MySMTP/mail"
+	"github.com/ImBubbles/MySMTP/smtp/protocol"
+	"github.com/ImBubbles/MySMTP/util/conn"
+	smtputil "github.com/ImBubbles/MySMTP/util/smtp"
+	stringutil "github.com/ImBubbles/MySMTP/util/string"
+	"github.com/ImBubbles/MySMTP/util/verify"
 )
-import "github.com/ImBubbles/MySMTP/smtp/protocol"
 
 // ServerConn handle client connections to the SMTP server
 type ServerConn struct {
-	client            *net.Conn
-	state             protocol.SMTPStates
-	reader            *bufio.Reader
-	relay             bool
-	requireTLS        bool
-	tlsConfig         *tls.Config
-	size              uint64
-	body              protocol.SMTPBody
-	mail              mail.Mail
-	config            *config.Config
-	senderVerifier    *verify.EmailVerifier
-	handlers          *Handlers
+	client         *net.Conn
+	state          protocol.SMTPStates
+	reader         *bufio.Reader
+	relay          bool
+	requireTLS     bool
+	tlsConfig      *tls.Config
+	size           uint64
+	body           protocol.SMTPBody
+	mail           mail.Mail
+	config         *config.Config
+	senderVerifier *verify.EmailVerifier
+	handlers       *Handlers
 }
 
 // NewServerConn creates a new server connection
@@ -129,12 +130,9 @@ func (s *ServerConn) handleEHLO(line string) {
 	if s.state != protocol.STATE_EHLO {
 		return
 	}
-	// Extract domain
+	// Extract domain (for validation)
 	parts := strings.Split(line, " ")
-	var domain string
-	if len(parts) > 1 {
-		domain = parts[1]
-	} else {
+	if len(parts) < 2 {
 		s.write(protocol.PREPARED_S_BAD_SYNTAX)
 		return
 	}
@@ -174,27 +172,43 @@ func (s *ServerConn) handleMailFrom(line string) {
 		s.write(protocol.PREPARED_S_BAD_COMMAND)
 		return
 	}
-	remainder := strings.TrimSpace(line[strings.Index(line, ": ")+1:])
+	// Find the colon (should be at ": " or just ":")
+	colonIndex := strings.Index(line, ":")
+	if colonIndex == -1 {
+		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		return
+	}
+	remainder := strings.TrimSpace(line[colonIndex+1:])
 
 	if remainder == "" {
 		s.write(protocol.PREPARED_S_BAD_SYNTAX)
 		return
 	}
 
-	// yay address
+	// Extract address (should be in <address> format)
 	addEnd := strings.Index(remainder, ">")
+	if addEnd == -1 {
+		// No closing bracket found
+		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		return
+	}
 	address := smtputil.CleanEmail(remainder[:addEnd+1])
-	
+	if address == "" {
+		// Invalid address
+		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		return
+	}
+
 	// Verify sender email address
 	if s.senderVerifier != nil && !s.senderVerifier.VerifyEmail(address) {
 		s.write(protocol.PREPARED_S_BAD_SYNTAX)
 		return
 	}
-	
+
 	s.mail.SetFrom(address)
 
-	// even has params?
-	if len(remainder) == addEnd {
+	// Check if there are parameters after the address
+	if len(remainder) <= addEnd+1 {
 		s.write(protocol.PREPARED_S_ACKNOWLEDGE)
 		return
 	}
@@ -204,15 +218,23 @@ func (s *ServerConn) handleMailFrom(line string) {
 	params := strings.Split(strings.TrimSpace(remainder[addEnd+1:]), " ")
 
 	for _, param := range params {
-		key := param
+		param = strings.TrimSpace(param)
+		if param == "" {
+			continue
+		}
 		eqIndex := strings.Index(param, "=")
+		var key string
 		var value string = ""
 		if eqIndex == -1 {
-			key = param[:eqIndex]
+			// No value, just key
+			key = param
 		} else {
-			value = param[eqIndex+1:]
+			// Has value
+			key = strings.TrimSpace(param[:eqIndex])
+			value = strings.TrimSpace(param[eqIndex+1:])
 		}
-		if protocol.SMTP_VALID_FLAGS.Contains(protocol.SMTPFromFlags(key)) { // is a valid flag
+		if key != "" && protocol.SMTP_VALID_FLAGS.Contains(protocol.SMTPFromFlags(key)) {
+			// Valid flag
 			flag := mail.NewFlag(key, value)
 			s.mail.AppendFlag(mail.FromFlag(*flag))
 		}
@@ -233,15 +255,31 @@ func (s *ServerConn) handleRctpTo(line string) { // todo handle NOTIFY=SUCCESS,F
 		s.write(protocol.PREPARED_S_BAD_COMMAND)
 		return
 	}
-	remainder := strings.TrimSpace(line[strings.Index(line, ": ")+1:])
+	// Find the colon (should be at ": " or just ":")
+	colonIndex := strings.Index(line, ":")
+	if colonIndex == -1 {
+		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		return
+	}
+	remainder := strings.TrimSpace(line[colonIndex+1:])
 	if remainder == "" {
 		s.write(protocol.PREPARED_S_BAD_SYNTAX)
 		return
 	}
-	// yay address
+	// Extract address (should be in <address> format)
 	addEnd := strings.Index(remainder, ">")
+	if addEnd == -1 {
+		// No closing bracket found
+		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		return
+	}
 	address := smtputil.CleanEmail(remainder[:addEnd+1])
-	
+	if address == "" {
+		// Invalid address
+		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		return
+	}
+
 	// Check if email exists using handler (default returns false)
 	if s.handlers != nil && s.handlers.EmailExistsChecker != nil {
 		if !s.handlers.EmailExistsChecker(address) {
@@ -250,7 +288,7 @@ func (s *ServerConn) handleRctpTo(line string) { // todo handle NOTIFY=SUCCESS,F
 			return
 		}
 	}
-	
+
 	s.mail.AppendTo(address)
 	s.write(protocol.PREPARED_S_ACKNOWLEDGE)
 }
@@ -276,7 +314,7 @@ func (s *ServerConn) handleData(line string) {
 	for {
 		rawLine := s.read()
 		trimmedLine := strings.TrimSpace(rawLine)
-		
+
 		// Check for terminator first (line containing only ".")
 		// The terminator is a line that when trimmed is just "."
 		isTerminator := trimmedLine == "."
@@ -365,7 +403,7 @@ func (s *ServerConn) handleData(line string) {
 
 	// Acknowledge successful data reception
 	s.write(protocol.PREPARED_S_ACKNOWLEDGE)
-	
+
 	// Reset state for next transaction
 	s.state = protocol.STATE_EHLO
 }
@@ -373,7 +411,7 @@ func (s *ServerConn) handleData(line string) {
 // processHeader parses and stores header information
 func (s *ServerConn) processHeader(headerName string, headerValue string) {
 	headerNameUpper := strings.ToUpper(headerName)
-	
+
 	// Parse common headers
 	switch headerNameUpper {
 	case "SUBJECT":
@@ -382,13 +420,13 @@ func (s *ServerConn) processHeader(headerName string, headerValue string) {
 		// Parse CC addresses (can be comma-separated)
 		addresses := mail.ParseNamedAddress(headerName + ": " + headerValue)
 		for _, addr := range *addresses {
-			s.mail.AppendCC(addr.address)
+			s.mail.AppendCC(addr.GetAddress())
 		}
 	case "BCC":
 		// Parse BCC addresses (can be comma-separated)
 		addresses := mail.ParseNamedAddress(headerName + ": " + headerValue)
 		for _, addr := range *addresses {
-			s.mail.AppendBCC(addr.address)
+			s.mail.AppendBCC(addr.GetAddress())
 		}
 	}
 }
@@ -440,7 +478,7 @@ func (s *ServerConn) handleRset(line string) {
 	// Reset the mail transaction
 	s.mail = mail.Mail{}
 	s.state = protocol.STATE_EHLO
-	
+
 	// Send acknowledgment
 	s.write(protocol.PREPARED_S_ACKNOWLEDGE)
 }

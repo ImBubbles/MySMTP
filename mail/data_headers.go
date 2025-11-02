@@ -16,10 +16,24 @@ type NamedAddress struct {
 	address string
 }
 
+// GetAddress returns the email address
+func (n *NamedAddress) GetAddress() string {
+	return n.address
+}
+
+// GetName returns the display name
+func (n *NamedAddress) GetName() string {
+	return n.name
+}
+
 func ParseNamedAddress(line string) *[]NamedAddress {
-	keyEndIndex := strings.Index(line, ":") + 1
-	key := strings.TrimSpace(line[keyEndIndex:])
-	value := strings.TrimSpace(line[:keyEndIndex])
+	keyEndIndex := strings.Index(line, ":")
+	if keyEndIndex == -1 {
+		// Invalid format, return empty slice
+		return &[]NamedAddress{}
+	}
+	key := strings.TrimSpace(line[:keyEndIndex])
+	value := strings.TrimSpace(line[keyEndIndex+1:])
 	var hasMultiple bool = strings.ContainsRune(value, ',')
 
 	alloc := strings.Count(line, ",") + 1
