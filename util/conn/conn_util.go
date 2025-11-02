@@ -8,6 +8,12 @@ import (
 )
 
 func Write(conn *net.Conn, str string) error {
+	// Ensure SMTP protocol compliance: all lines must end with \r\n
+	// Add \r\n if not already present
+	if len(str) < 2 || str[len(str)-2:] != "\r\n" {
+		str += "\r\n"
+	}
+
 	data := []byte(str)
 	// Write all bytes - Write() may write only part of the data
 	// Loop until all bytes are written or an error occurs
