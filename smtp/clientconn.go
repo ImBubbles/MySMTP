@@ -3,10 +3,12 @@ package smtp
 import (
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ImBubbles/MySMTP/config"
@@ -26,7 +28,7 @@ type ClientConn struct {
 	serverName string // Server hostname (for TLS SNI)
 }
 
-func NewClientConn(conn net.Conn, mail mail.Mail) *ClientConn {
+func NewClientConn(conn net.Conn, mail mail.Mail) (*ClientConn, error) {
 	// Load config for hostname
 	cfg := config.GetConfig()
 	hostname := cfg.ClientHostname
@@ -46,8 +48,8 @@ func NewClientConn(conn net.Conn, mail mail.Mail) *ClientConn {
 		mail:     mail,
 		hostname: hostname,
 	}
-	clientConn.handle()
-	return clientConn
+	err := clientConn.handle()
+	return clientConn, err
 }
 
 // SetTLSConfig sets the TLS configuration for STARTTLS
@@ -68,7 +70,7 @@ func NewClientConnFromJSON(conn net.Conn, jsonBytes []byte) (*ClientConn, error)
 	if err != nil {
 		return nil, err
 	}
-	return NewClientConn(conn, *mail), nil
+	return NewClientConn(conn, *mail)
 }
 
 // NewClientConnFromJSONString creates a new client connection from a JSON string
@@ -79,7 +81,7 @@ func NewClientConnFromJSONString(conn net.Conn, jsonStr string) (*ClientConn, er
 
 // NewClientConnFromJSONMail creates a new client connection from a JSONMail struct
 // This is a convenience function to easily create a ClientConn from a JSONMail
-func NewClientConnFromJSONMail(conn net.Conn, jsonMail *mail.JSONMail) *ClientConn {
+func NewClientConnFromJSONMail(conn net.Conn, jsonMail *mail.JSONMail) (*ClientConn, error) {
 	mail := jsonMail.ToMail()
 	return NewClientConn(conn, *mail)
 }
@@ -119,55 +121,91 @@ func DialSMTP(host string, port ...uint16) (net.Conn, error) {
 	return conn, nil
 }
 
-func (c *ClientConn) handle() {
+func (c *ClientConn) handle() error {
 	// Read server greeting (220 Service Ready)
-	response := c.read()
+	response, err := c.read()
+	if err != nil {
+		return fmt.Errorf("failed to read server greeting: %w", err)
+	}
+	if response == "" {
+		return errors.New("connection closed by server")
+	}
 	if !c.isSuccessCode(response, protocol.CODE_READY) {
-		panic("Failed to receive server greeting")
+		return fmt.Errorf("server greeting failed: %s", response)
 	}
 
 	// Send EHLO command
-	c.sendEHLO()
-
-	// Send MAIL FROM command
-	c.sendMailFrom()
-
-	// Send RCPT TO commands for all recipients
-	c.sendRcptTo()
-
-	// Send DATA command
-	c.sendData()
-
-	// Send email content (headers + body)
-	c.sendEmailContent()
-
-	// Read final acknowledgment
-	response = c.read()
-	if !c.isSuccessCode(response, protocol.CODE_ACKNOWLEDGE) {
-		panic("Failed to send email data")
+	if err := c.sendEHLO(); err != nil {
+		return fmt.Errorf("EHLO failed: %w", err)
 	}
 
-	// Send QUIT command
+	// Send MAIL FROM command
+	if err := c.sendMailFrom(); err != nil {
+		return fmt.Errorf("MAIL FROM failed: %w", err)
+	}
+
+	// Send RCPT TO commands for all recipients
+	if err := c.sendRcptTo(); err != nil {
+		return fmt.Errorf("RCPT TO failed: %w", err)
+	}
+
+	// Send DATA command
+	if err := c.sendData(); err != nil {
+		return fmt.Errorf("DATA command failed: %w", err)
+	}
+
+	// Send email content (headers + body)
+	if err := c.sendEmailContent(); err != nil {
+		return fmt.Errorf("sending email content failed: %w", err)
+	}
+
+	// Read final acknowledgment
+	response, err = c.read()
+	if err != nil {
+		return fmt.Errorf("failed to read final acknowledgment: %w", err)
+	}
+	if response == "" {
+		return errors.New("connection closed by server before final acknowledgment")
+	}
+	if !c.isSuccessCode(response, protocol.CODE_ACKNOWLEDGE) {
+		return fmt.Errorf("final acknowledgment failed: %s", response)
+	}
+
+	// Send QUIT command (ignore errors as connection will close)
 	c.sendQuit()
+	return nil
 }
 
-func (c *ClientConn) write(str string) {
+func (c *ClientConn) write(str string) error {
 	// Update write deadline before each write (net.Conn interface supports SetWriteDeadline)
 	c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	_, err := c.conn.Write([]byte(str))
 	if err != nil {
-		panic(fmt.Sprintf("Write error: %v", err))
+		// Handle broken pipe and connection errors gracefully
+		// Check for syscall.EPIPE (broken pipe) or other connection errors
+		if netErr, ok := err.(*net.OpError); ok {
+			return fmt.Errorf("write error (connection broken): %w", netErr)
+		}
+		// Check for syscall errors (broken pipe on Unix, or other syscall errors)
+		if sysErr, ok := err.(*os.SyscallError); ok {
+			if sysErr.Err == syscall.EPIPE {
+				return fmt.Errorf("write error (broken pipe): %w", sysErr)
+			}
+		}
+		// For any other write error, return it
+		return fmt.Errorf("write error: %w", err)
 	}
+	return nil
 }
 
-func (c *ClientConn) read() string {
+func (c *ClientConn) read() (string, error) {
 	// Update read deadline before each read (net.Conn interface supports SetReadDeadline)
 	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	response := conn.Read(c.reader)
 	if response == "" {
-		panic("Read error: empty response (connection may have closed)")
+		return "", errors.New("read error: empty response (connection may have closed)")
 	}
-	return response
+	return response, nil
 }
 
 // isSuccessCode checks if the response code matches the expected code
@@ -196,14 +234,16 @@ func (c *ClientConn) parseResponseCode(response string) protocol.SMTPCode {
 
 // sendEHLO sends EHLO command and optionally upgrades to TLS if available
 // allowTLS controls whether to attempt STARTTLS (used to prevent recursion)
-func (c *ClientConn) sendEHLO() {
-	c.sendEHLOWithTLS(true)
+func (c *ClientConn) sendEHLO() error {
+	return c.sendEHLOWithTLS(true)
 }
 
 // sendEHLOWithTLS is the internal implementation that allows controlling TLS behavior
-func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) {
+func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) error {
 	ehloCmd := fmt.Sprintf("%s %s\r\n", protocol.COMMAND_EHLO, c.hostname)
-	c.write(ehloCmd)
+	if err := c.write(ehloCmd); err != nil {
+		return fmt.Errorf("failed to write EHLO command: %w", err)
+	}
 
 	// Read server responses (may be multiple lines)
 	// SMTP multi-line responses use "-" as 4th character for continuation
@@ -211,16 +251,19 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) {
 	extensions := make([]string, 0)
 
 	for {
-		response := c.read()
+		response, err := c.read()
+		if err != nil {
+			return fmt.Errorf("failed to read EHLO response: %w", err)
+		}
 		if response == "" {
-			panic("EHLO failed: empty response")
+			return errors.New("EHLO failed: empty response")
 		}
 
 		code := c.parseResponseCode(response)
 
 		// Check if this is an error
 		if code >= protocol.CODE_INTERNAL_SERVER_ERROR {
-			panic(fmt.Sprintf("EHLO failed: %s", response))
+			return fmt.Errorf("EHLO failed: %s", response)
 		}
 
 		// Check if this is a continuation line (SMTP standard: 4th char is "-")
@@ -281,31 +324,41 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) {
 					InsecureSkipVerify: false,
 				}
 			}
-			c.sendSTARTTLS()
+			if err := c.sendSTARTTLS(); err != nil {
+				return fmt.Errorf("STARTTLS failed: %w", err)
+			}
 			// After STARTTLS, must send EHLO again (but don't check for STARTTLS again)
-			c.sendEHLOWithTLS(false)
-			return
+			if err := c.sendEHLOWithTLS(false); err != nil {
+				return fmt.Errorf("EHLO after STARTTLS failed: %w", err)
+			}
+			return nil
 		}
 	}
 
 	c.state = protocol.STATE_MAIL_FROM
+	return nil
 }
 
 // sendSTARTTLS sends STARTTLS command and upgrades connection to TLS
-func (c *ClientConn) sendSTARTTLS() {
+func (c *ClientConn) sendSTARTTLS() error {
 	// Send STARTTLS command
 	starttlsCmd := fmt.Sprintf("%s\r\n", protocol.COMMAND_STARTTLS)
-	c.write(starttlsCmd)
+	if err := c.write(starttlsCmd); err != nil {
+		return fmt.Errorf("failed to write STARTTLS command: %w", err)
+	}
 
 	// Read server response (220 Ready to start TLS)
-	response := c.read()
+	response, err := c.read()
+	if err != nil {
+		return fmt.Errorf("failed to read STARTTLS response: %w", err)
+	}
 	if response == "" {
-		panic("STARTTLS failed: empty response")
+		return errors.New("STARTTLS failed: empty response")
 	}
 
 	code := c.parseResponseCode(response)
 	if code != protocol.CODE_READY {
-		panic(fmt.Sprintf("STARTTLS failed: %s", response))
+		return fmt.Errorf("STARTTLS failed: %s", response)
 	}
 
 	// Perform TLS handshake
@@ -357,9 +410,8 @@ func (c *ClientConn) sendSTARTTLS() {
 	}
 
 	tlsConn := tls.Client(c.conn, tlsConfig)
-	err := tlsConn.Handshake()
-	if err != nil {
-		panic(fmt.Sprintf("TLS handshake failed: %v", err))
+	if err := tlsConn.Handshake(); err != nil {
+		return fmt.Errorf("TLS handshake failed: %w", err)
 	}
 
 	// Update connection and reader with TLS-wrapped connection
@@ -367,91 +419,144 @@ func (c *ClientConn) sendSTARTTLS() {
 	c.reader = bufio.NewReader(tlsConn)
 
 	// State remains EHLO - client must send EHLO again after STARTTLS
+	return nil
 }
 
-func (c *ClientConn) sendMailFrom() {
+func (c *ClientConn) sendMailFrom() error {
 	from := c.mail.GetFrom()
 	if from == "" {
-		panic("No FROM address specified")
+		return errors.New("no FROM address specified")
 	}
 
 	// Format: MAIL FROM:<address>
 	mailCmd := fmt.Sprintf("%s FROM:<%s>\r\n", protocol.COMMAND_MAIL, from)
-	c.write(mailCmd)
+	if err := c.write(mailCmd); err != nil {
+		return fmt.Errorf("failed to write MAIL FROM command: %w", err)
+	}
 
-	response := c.read()
+	response, err := c.read()
+	if err != nil {
+		return fmt.Errorf("failed to read MAIL FROM response: %w", err)
+	}
+	if response == "" {
+		return errors.New("MAIL FROM failed: empty response (connection closed)")
+	}
 	if !c.isSuccessCode(response, protocol.CODE_ACKNOWLEDGE) {
-		panic(fmt.Sprintf("MAIL FROM failed: %s", response))
+		return fmt.Errorf("MAIL FROM failed: %s", response)
 	}
 
 	c.state = protocol.STATE_RCPT_TO
+	return nil
 }
 
-func (c *ClientConn) sendRcptTo() {
+func (c *ClientConn) sendRcptTo() error {
 	// Send RCPT TO for all "to" recipients
 	for _, to := range c.mail.GetTo() {
 		rcptCmd := fmt.Sprintf("%s TO:<%s>\r\n", protocol.COMMAND_RCPT, to)
-		c.write(rcptCmd)
+		if err := c.write(rcptCmd); err != nil {
+			return fmt.Errorf("failed to write RCPT TO for %s: %w", to, err)
+		}
 
-		response := c.read()
+		response, err := c.read()
+		if err != nil {
+			return fmt.Errorf("failed to read RCPT TO response for %s: %w", to, err)
+		}
+		if response == "" {
+			return fmt.Errorf("RCPT TO failed for %s: empty response (connection closed)", to)
+		}
 		if !c.isSuccessCode(response, protocol.CODE_ACKNOWLEDGE) {
-			panic(fmt.Sprintf("RCPT TO failed for %s: %s", to, response))
+			return fmt.Errorf("RCPT TO failed for %s: %s", to, response)
 		}
 	}
 
 	// Send RCPT TO for CC recipients (they also need RCPT TO)
 	for _, cc := range c.mail.GetCC() {
 		rcptCmd := fmt.Sprintf("%s TO:<%s>\r\n", protocol.COMMAND_RCPT, cc)
-		c.write(rcptCmd)
+		if err := c.write(rcptCmd); err != nil {
+			return fmt.Errorf("failed to write RCPT TO for CC %s: %w", cc, err)
+		}
 
-		response := c.read()
+		response, err := c.read()
+		if err != nil {
+			return fmt.Errorf("failed to read RCPT TO response for CC %s: %w", cc, err)
+		}
+		if response == "" {
+			return fmt.Errorf("RCPT TO failed for CC %s: empty response (connection closed)", cc)
+		}
 		if !c.isSuccessCode(response, protocol.CODE_ACKNOWLEDGE) {
-			panic(fmt.Sprintf("RCPT TO failed for CC %s: %s", cc, response))
+			return fmt.Errorf("RCPT TO failed for CC %s: %s", cc, response)
 		}
 	}
 
 	// BCC recipients also need RCPT TO, but are not included in headers
 	for _, bcc := range c.mail.GetBCC() {
 		rcptCmd := fmt.Sprintf("%s TO:<%s>\r\n", protocol.COMMAND_RCPT, bcc)
-		c.write(rcptCmd)
+		if err := c.write(rcptCmd); err != nil {
+			return fmt.Errorf("failed to write RCPT TO for BCC %s: %w", bcc, err)
+		}
 
-		response := c.read()
+		response, err := c.read()
+		if err != nil {
+			return fmt.Errorf("failed to read RCPT TO response for BCC %s: %w", bcc, err)
+		}
+		if response == "" {
+			return fmt.Errorf("RCPT TO failed for BCC %s: empty response (connection closed)", bcc)
+		}
 		if !c.isSuccessCode(response, protocol.CODE_ACKNOWLEDGE) {
-			panic(fmt.Sprintf("RCPT TO failed for BCC %s: %s", bcc, response))
+			return fmt.Errorf("RCPT TO failed for BCC %s: %s", bcc, response)
 		}
 	}
 
 	c.state = protocol.STATE_DATA
+	return nil
 }
 
-func (c *ClientConn) sendData() {
+func (c *ClientConn) sendData() error {
 	// Send DATA command
 	dataCmd := fmt.Sprintf("%s\r\n", protocol.COMMAND_DATA)
-	c.write(dataCmd)
+	if err := c.write(dataCmd); err != nil {
+		return fmt.Errorf("failed to write DATA command: %w", err)
+	}
 
 	// Read server response (354 Start mail input)
-	response := c.read()
-	if !c.isSuccessCode(response, protocol.CODE_START_MAIL_INPUT) {
-		panic(fmt.Sprintf("DATA command failed: %s", response))
+	response, err := c.read()
+	if err != nil {
+		return fmt.Errorf("failed to read DATA response: %w", err)
 	}
+	if response == "" {
+		return errors.New("DATA command failed: empty response (connection closed)")
+	}
+	if !c.isSuccessCode(response, protocol.CODE_START_MAIL_INPUT) {
+		return fmt.Errorf("DATA command failed: %s", response)
+	}
+	return nil
 }
 
-func (c *ClientConn) sendEmailContent() {
+func (c *ClientConn) sendEmailContent() error {
 	// Build email headers
 	headers := c.buildHeaders()
 
 	// Send headers
-	c.write(headers)
+	if err := c.write(headers); err != nil {
+		return fmt.Errorf("failed to write headers: %w", err)
+	}
 
 	// Send blank line to separate headers from body
-	c.write("\r\n")
+	if err := c.write("\r\n"); err != nil {
+		return fmt.Errorf("failed to write header-body separator: %w", err)
+	}
 
 	// Send body with SMTP transparency handling
 	body := c.mail.GetData()
-	c.writeBody(body)
+	if err := c.writeBody(body); err != nil {
+		return fmt.Errorf("failed to write body: %w", err)
+	}
 
 	// Send terminator (line containing only ".")
-	c.write(".\r\n")
+	if err := c.write(".\r\n"); err != nil {
+		return fmt.Errorf("failed to write terminator: %w", err)
+	}
+	return nil
 }
 
 func (c *ClientConn) buildHeaders() string {
@@ -493,9 +598,9 @@ func (c *ClientConn) buildHeaders() string {
 	return builder.String()
 }
 
-func (c *ClientConn) writeBody(body string) {
+func (c *ClientConn) writeBody(body string) error {
 	if body == "" {
-		return
+		return nil
 	}
 
 	// Handle SMTP transparency: lines starting with "." need to have "." prepended
@@ -516,18 +621,23 @@ func (c *ClientConn) writeBody(body string) {
 		}
 
 		// Send line with CRLF
-		c.write(line + "\r\n")
+		if err := c.write(line + "\r\n"); err != nil {
+			return fmt.Errorf("failed to write body line %d: %w", i, err)
+		}
 	}
+	return nil
 }
 
 func (c *ClientConn) sendQuit() {
 	quitCmd := fmt.Sprintf("%s\r\n", protocol.COMMAND_QUIT)
+	// Ignore write errors as connection will close anyway
 	c.write(quitCmd)
 
 	// Read server response (221 Bye)
-	response := c.read()
-	if !c.isSuccessCode(response, protocol.CODE_QUIT) {
-		// Log but don't panic - connection will close anyway
+	// Ignore read errors as connection will close anyway
+	response, _ := c.read()
+	if response != "" && !c.isSuccessCode(response, protocol.CODE_QUIT) {
+		// Log but don't return error - connection will close anyway
 		fmt.Fprintf(os.Stderr, "QUIT response unexpected: %s\n", response)
 	}
 }

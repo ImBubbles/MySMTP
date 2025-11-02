@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"os"
 	"strings"
+	"syscall"
 
 	"github.com/ImBubbles/MySMTP/config"
 	"github.com/ImBubbles/MySMTP/mail"
@@ -83,9 +85,17 @@ func (s *ServerConn) SetTLSConfig(config *tls.Config) {
 }
 
 func (s *ServerConn) handle() {
-	s.write(protocol.PREPARED_S_ACCEPTANCE)
+	if !s.write(protocol.PREPARED_S_ACCEPTANCE) {
+		return // Connection broken
+	}
 	for {
 		line := s.read()
+		// Check if connection was closed (empty read means connection closed)
+		if line == "" {
+			fmt.Printf("SERVER: Connection closed by client\n")
+			return
+		}
+
 		command := strings.ToUpper(line)
 		command = stringutil.FirstWord(command)
 
@@ -110,19 +120,37 @@ func (s *ServerConn) handle() {
 		case string(protocol.COMMAND_RSET):
 			s.handleRset(line)
 		default:
-			s.write(protocol.PREPARED_S_BAD_COMMAND)
+			if !s.write(protocol.PREPARED_S_BAD_COMMAND) {
+				return // Connection broken
+			}
 		}
 	}
 }
 
-func (s *ServerConn) write(str string) {
+func (s *ServerConn) write(str string) bool {
 	// Print transmission to client (trim \r\n for cleaner output)
 	output := strings.TrimRight(str, "\r\n")
 	fmt.Printf("SERVER -> CLIENT: %s\n", output)
 	err := conn.Write(s.client, str)
 	if err != nil {
-		panic(err)
+		// Handle broken pipe and connection errors gracefully
+		// Check for syscall.EPIPE (broken pipe) or other connection errors
+		if netErr, ok := err.(*net.OpError); ok {
+			fmt.Fprintf(os.Stderr, "SERVER: Write error (connection broken): %v\n", netErr)
+			return false
+		}
+		// Check for syscall errors (broken pipe on Unix, or other syscall errors)
+		if sysErr, ok := err.(*os.SyscallError); ok {
+			if sysErr.Err == syscall.EPIPE {
+				fmt.Fprintf(os.Stderr, "SERVER: Write error (broken pipe): %v\n", sysErr)
+				return false
+			}
+		}
+		// For any other write error, log and return false
+		fmt.Fprintf(os.Stderr, "SERVER: Write error: %v\n", err)
+		return false
 	}
+	return true
 }
 
 func (s *ServerConn) read() string {
@@ -140,23 +168,41 @@ func (s *ServerConn) handleEHLO(line string) {
 	// Extract domain (for validation)
 	parts := strings.Split(line, " ")
 	if len(parts) < 2 {
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 
+	// Get client domain from EHLO command
+	clientDomain := parts[1]
 	// Respond with success code and supported extensions
 	// Use configured server domain instead of client's domain
 	serverDomain := s.config.ServerDomain
-	s.write(fmt.Sprintf(protocol.PREPARED_S_ADVERTISE_HELLO, serverDomain))
-	//s.write(fmt.Sprintf(protocol.PREPARED_S_ADVERTISE_SIZE, parts[0]))
-	if s.relay {
-		s.write(protocol.PREPARED_S_ADVERTISE_AUTH)
+
+	// First continuation line: 250-<serverDomain> Hello <clientDomain>
+	// SMTP requires continuation lines to use hyphen (250-), not space (250 )
+	firstLine := fmt.Sprintf("250-%s Hello %s\r\n", serverDomain, clientDomain)
+	if !s.write(firstLine) {
+		return
 	}
-	//s.write(protocol.PREPARED_S_ADVERTISE_PIPELINING)
-	//s.write(protocol.PREPARED_S_ADVERTISE_HELP)
-	s.write(protocol.PREPARED_S_ADVERTISE_8BITMIME)
-	//s.write(protocol.PREPARED_S_ADVERTISE_TLS)
-	s.write(protocol.PREPARED_S_ACKNOWLEDGE)
+
+	// Additional continuation lines: 250-<extension>
+	if s.relay {
+		// 250-AUTH <method>
+		if !s.write("250-AUTH PLAIN LOGIN\r\n") {
+			return
+		}
+	}
+	// 250-8BITMIME
+	if !s.write("250-8BITMIME\r\n") {
+		return
+	}
+
+	// Final line: 250 <final message> (with space, not hyphen)
+	if !s.write(protocol.PREPARED_S_ACKNOWLEDGE) {
+		return
+	}
 
 	if s.relay {
 		s.state = protocol.STATE_AUTH
@@ -171,24 +217,34 @@ func (s *ServerConn) handleEHLO(line string) {
 
 func (s *ServerConn) handleMailFrom(line string) {
 	if s.state != protocol.STATE_MAIL_FROM {
-		s.write(protocol.PREPARED_S_BAD_SEQUENCE)
+		if !s.write(protocol.PREPARED_S_BAD_SEQUENCE) {
+			return
+		}
 		return
 	}
 
-	if !strings.HasPrefix(line, "MAIL FROM:") {
-		s.write(protocol.PREPARED_S_BAD_COMMAND)
+	// MAIL FROM command should be case-insensitive per SMTP spec
+	upperLine := strings.ToUpper(line)
+	if !strings.HasPrefix(upperLine, "MAIL FROM:") {
+		if !s.write(protocol.PREPARED_S_BAD_COMMAND) {
+			return
+		}
 		return
 	}
 	// Find the colon (should be at ": " or just ":")
 	colonIndex := strings.Index(line, ":")
 	if colonIndex == -1 {
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 	remainder := strings.TrimSpace(line[colonIndex+1:])
 
 	if remainder == "" {
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 
@@ -196,19 +252,25 @@ func (s *ServerConn) handleMailFrom(line string) {
 	addEnd := strings.Index(remainder, ">")
 	if addEnd == -1 {
 		// No closing bracket found
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 	address := smtputil.CleanEmail(remainder[:addEnd+1])
 	if address == "" {
 		// Invalid address
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 
 	// Verify sender email address
 	if s.senderVerifier != nil && !s.senderVerifier.VerifyEmail(address) {
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 
@@ -216,7 +278,9 @@ func (s *ServerConn) handleMailFrom(line string) {
 
 	// Check if there are parameters after the address
 	if len(remainder) <= addEnd+1 {
-		s.write(protocol.PREPARED_S_ACKNOWLEDGE)
+		if !s.write(protocol.PREPARED_S_ACKNOWLEDGE) {
+			return
+		}
 		return
 	}
 
@@ -247,43 +311,59 @@ func (s *ServerConn) handleMailFrom(line string) {
 		}
 	}
 
-	s.write(protocol.PREPARED_S_ACKNOWLEDGE)
+	if !s.write(protocol.PREPARED_S_ACKNOWLEDGE) {
+		return
+	}
 	s.state = protocol.STATE_RCPT_TO
 
 }
 
 func (s *ServerConn) handleRctpTo(line string) { // todo handle NOTIFY=SUCCESS,FAILURE,DENY
 	if s.state != protocol.STATE_RCPT_TO {
-		s.write(protocol.PREPARED_S_BAD_SEQUENCE)
+		if !s.write(protocol.PREPARED_S_BAD_SEQUENCE) {
+			return
+		}
 		return
 	}
+	// RCPT TO command should be case-insensitive per SMTP spec
 	// Expected format is "RCPT TO:<address>"
-	if !strings.HasPrefix(line, "RCPT TO:") {
-		s.write(protocol.PREPARED_S_BAD_COMMAND)
+	upperLine := strings.ToUpper(line)
+	if !strings.HasPrefix(upperLine, "RCPT TO:") {
+		if !s.write(protocol.PREPARED_S_BAD_COMMAND) {
+			return
+		}
 		return
 	}
 	// Find the colon (should be at ": " or just ":")
 	colonIndex := strings.Index(line, ":")
 	if colonIndex == -1 {
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 	remainder := strings.TrimSpace(line[colonIndex+1:])
 	if remainder == "" {
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 	// Extract address (should be in <address> format)
 	addEnd := strings.Index(remainder, ">")
 	if addEnd == -1 {
 		// No closing bracket found
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 	address := smtputil.CleanEmail(remainder[:addEnd+1])
 	if address == "" {
 		// Invalid address
-		s.write(protocol.PREPARED_S_BAD_SYNTAX)
+		if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+			return
+		}
 		return
 	}
 
@@ -291,13 +371,17 @@ func (s *ServerConn) handleRctpTo(line string) { // todo handle NOTIFY=SUCCESS,F
 	if s.handlers != nil && s.handlers.EmailExistsChecker != nil {
 		if !s.handlers.EmailExistsChecker(address) {
 			// Email does not exist
-			s.write(protocol.PREPARED_S_BAD_SYNTAX)
+			if !s.write(protocol.PREPARED_S_BAD_SYNTAX) {
+				return
+			}
 			return
 		}
 	}
 
 	s.mail.AppendTo(address)
-	s.write(protocol.PREPARED_S_ACKNOWLEDGE)
+	if !s.write(protocol.PREPARED_S_ACKNOWLEDGE) {
+		return
+	}
 }
 
 func (s *ServerConn) handleData(line string) {
@@ -305,10 +389,14 @@ func (s *ServerConn) handleData(line string) {
 		s.state = protocol.STATE_DATA
 	}
 	if s.state != protocol.STATE_DATA {
-		s.write(protocol.PREPARED_S_BAD_SEQUENCE)
+		if !s.write(protocol.PREPARED_S_BAD_SEQUENCE) {
+			return
+		}
 		return
 	}
-	s.write(protocol.PREPARED_S_START_DATA)
+	if !s.write(protocol.PREPARED_S_START_DATA) {
+		return
+	}
 
 	// Read headers until blank line
 	headers := *stringutil.NewStringBuilder()
@@ -320,6 +408,12 @@ func (s *ServerConn) handleData(line string) {
 
 	for {
 		rawLine := s.read()
+		// Check if connection was closed (empty read means connection closed)
+		if rawLine == "" {
+			fmt.Printf("SERVER: Connection closed by client during DATA\n")
+			return // Connection broken during DATA phase
+		}
+
 		trimmedLine := strings.TrimSpace(rawLine)
 
 		// Check for terminator first (line containing only ".")
@@ -403,13 +497,17 @@ func (s *ServerConn) handleData(line string) {
 	if s.handlers != nil && s.handlers.MailHandler != nil {
 		if err := s.handlers.MailHandler(&s.mail); err != nil {
 			// Handler rejected the mail
-			s.write(protocol.PREPARED_S_TRANSACTION_FAILED)
+			if !s.write(protocol.PREPARED_S_TRANSACTION_FAILED) {
+				return
+			}
 			return
 		}
 	}
 
 	// Acknowledge successful data reception
-	s.write(protocol.PREPARED_S_ACKNOWLEDGE)
+	if !s.write(protocol.PREPARED_S_ACKNOWLEDGE) {
+		return
+	}
 
 	// Reset state for next transaction
 	s.state = protocol.STATE_EHLO
@@ -441,18 +539,24 @@ func (s *ServerConn) processHeader(headerName string, headerValue string) {
 func (s *ServerConn) handleStartTLS(line string) {
 	// STARTTLS can only be used in EHLO state (before authentication or mail transaction)
 	if s.state != protocol.STATE_EHLO {
-		s.write(protocol.PREPARED_S_BAD_SEQUENCE)
+		if !s.write(protocol.PREPARED_S_BAD_SEQUENCE) {
+			return
+		}
 		return
 	}
 
 	// Check if TLS config is available
 	if s.tlsConfig == nil {
-		s.write(protocol.PREPARED_S_BAD_COMMAND)
+		if !s.write(protocol.PREPARED_S_BAD_COMMAND) {
+			return
+		}
 		return
 	}
 
 	// Send "220 Ready to start TLS"
-	s.write(protocol.PREPARED_S_STARTTLS_READY)
+	if !s.write(protocol.PREPARED_S_STARTTLS_READY) {
+		return
+	}
 
 	// Perform TLS handshake
 	tlsConn := tls.Server(*s.client, s.tlsConfig)
@@ -477,8 +581,8 @@ func (s *ServerConn) handleStartTLS(line string) {
 
 func (s *ServerConn) handleQuit(line string) {
 	// Send "221 Bye" response
+	// Connection will be closed by caller, so ignore write errors
 	s.write(protocol.PREPARED_S_BYE)
-	// Connection will be closed by caller
 }
 
 func (s *ServerConn) handleRset(line string) {
@@ -487,5 +591,7 @@ func (s *ServerConn) handleRset(line string) {
 	s.state = protocol.STATE_EHLO
 
 	// Send acknowledgment
-	s.write(protocol.PREPARED_S_ACKNOWLEDGE)
+	if !s.write(protocol.PREPARED_S_ACKNOWLEDGE) {
+		return
+	}
 }
