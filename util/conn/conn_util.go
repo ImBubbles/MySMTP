@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"net"
+	"strings"
 )
 
 func Write(conn *net.Conn, str string) error {
@@ -26,47 +27,19 @@ func NewReader(conn *net.Conn) *bufio.Reader {
 }
 
 func Read(r *bufio.Reader) string {
-	// Use ReadLine() for more robust SMTP line reading
-	// ReadLine() handles both \n and \r\n and returns the line without the delimiter
-	line, isPrefix, err := r.ReadLine()
+	// ReadString reads until \n (works with both \n and \r\n)
+	line, err := r.ReadString('\n')
 	if err != nil {
 		if err == io.EOF {
-			// EOF means connection closed, return empty string
 			return ""
 		}
-		// Check if it's a timeout error
 		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-			// Timeout error - return empty string so caller can handle it
 			return ""
 		}
-		// Other errors - return empty string instead of panicking
-		// Callers should check for empty string to detect errors
-		// Panicking in a library function is not good practice
 		return ""
 	}
 
-	// If the line is too long (isPrefix is true), we need to read more
-	// SMTP lines shouldn't exceed 998 bytes per RFC 5321, but we'll handle longer lines
-	var fullLine []byte = line
-	for isPrefix {
-		line, isPrefix, err = r.ReadLine()
-		if err != nil {
-			if err == io.EOF {
-				// EOF during reading - return what we have
-				break
-			}
-			// Check if it's a timeout error
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Timeout during reading - return what we have
-				break
-			}
-			// Other errors - return what we have so far instead of panicking
-			break
-		}
-		fullLine = append(fullLine, line...)
-	}
-
-	// Convert to string and append \r\n (SMTP uses CRLF but ReadLine removes it)
-	// We add \r\n here so callers get the proper SMTP line ending
-	return string(fullLine) + "\r\n"
+	// Trim any \r\n or \n, then add back \r\n for consistency
+	line = strings.TrimRight(line, "\r\n")
+	return line + "\r\n"
 }
