@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ImBubbles/MySMTP/config"
 	"github.com/ImBubbles/MySMTP/mail"
@@ -109,14 +110,22 @@ func (c *ClientConn) handle() {
 }
 
 func (c *ClientConn) write(str string) {
+	// Update write deadline before each write (net.Conn interface supports SetWriteDeadline)
+	c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	_, err := c.conn.Write([]byte(str))
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("Write error: %v", err))
 	}
 }
 
 func (c *ClientConn) read() string {
-	return conn.Read(c.reader)
+	// Update read deadline before each read (net.Conn interface supports SetReadDeadline)
+	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	response := conn.Read(c.reader)
+	if response == "" {
+		panic("Read error: empty response (connection may have closed)")
+	}
+	return response
 }
 
 // isSuccessCode checks if the response code matches the expected code
@@ -148,10 +157,14 @@ func (c *ClientConn) sendEHLO() {
 	c.write(ehloCmd)
 
 	// Read server responses (may be multiple lines)
-	// SMTP multi-line responses: continuation lines end with "-CRLF", final line ends with " CRLF"
-	// Format: "250-extension info\r\n" (continuation) or "250 OK\r\n" (final)
+	// SMTP multi-line responses use "-" as 4th character for continuation
+	// Final line has space (or sometimes nothing) as 4th character
 	for {
 		response := c.read()
+		if response == "" {
+			panic("EHLO failed: empty response")
+		}
+
 		code := c.parseResponseCode(response)
 
 		// Check if this is an error
@@ -165,13 +178,26 @@ func (c *ClientConn) sendEHLO() {
 		if len(response) >= 4 {
 			// Check the 4th character (index 3) after the 3-digit code
 			if response[3] == '-' {
-				// Continuation line, continue reading more lines
+				// Continuation line, continue reading
 				continue
+			}
+			// If 4th char is space or the code is 250, it's the final line
+			if response[3] == ' ' || code == protocol.CODE_ACKNOWLEDGE {
+				break
+			}
+		} else if len(response) >= 3 {
+			// Short response, check if it's a valid 250 response
+			if code == protocol.CODE_ACKNOWLEDGE {
+				break
 			}
 		}
 
-		// If not a continuation line, this must be the final line
-		// Break to proceed to next SMTP command
+		// Safety: if we got here and code is 250, assume it's final
+		if code == protocol.CODE_ACKNOWLEDGE {
+			break
+		}
+
+		// If we got a non-250 success code or unexpected response, break to avoid infinite loop
 		break
 	}
 

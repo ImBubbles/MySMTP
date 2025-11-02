@@ -2,6 +2,7 @@ package conn
 
 import (
 	"bufio"
+	"io"
 	"net"
 )
 
@@ -15,11 +16,13 @@ func NewReader(conn *net.Conn) *bufio.Reader {
 }
 
 func Read(r *bufio.Reader) string {
-	for {
-		message, err := (*r).ReadString('\n')
-		if err != nil {
-			panic(err)
+	message, err := r.ReadString('\n')
+	if err != nil {
+		if err == io.EOF {
+			// EOF means connection closed, return empty string or handle gracefully
+			return ""
 		}
-		return message
+		panic(err)
 	}
+	return message
 }
