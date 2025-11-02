@@ -153,14 +153,88 @@ func DialSMTP(host string, port ...uint16) (net.Conn, error) {
 	return conn, nil
 }
 
+// DialSMTPS creates a direct TLS connection to an SMTP server (SMTPS on port 465)
+// This is an alternative to STARTTLS - the connection starts with TLS from the beginning
+// Port 465 is the secure submission port (SMTPS)
+// You can specify a custom port, or it defaults to 465
+// Returns a net.Conn wrapped in TLS ready for use with NewClientConn
+// IMPORTANT: Set ServerName with SetServerName() for proper SNI before calling NewClientConn
+func DialSMTPS(host string, port ...uint16) (net.Conn, error) {
+	var smtpPort uint16
+
+	// Use provided port, or default to 465 (SMTPS - secure submission)
+	if len(port) > 0 && port[0] != 0 {
+		smtpPort = port[0]
+	} else {
+		smtpPort = 465 // Default to port 465 (SMTPS - secure submission)
+	}
+
+	address := net.JoinHostPort(host, fmt.Sprintf("%d", smtpPort))
+
+	// Create dialer with timeout to prevent hanging
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+	}
+
+	// Dial TCP connection first
+	conn, err := dialer.Dial("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to SMTP server %s: %w", address, err)
+	}
+
+	// Determine server name for TLS SNI
+	serverName := host
+	if net.ParseIP(host) != nil {
+		// It's an IP - we need a hostname for SNI
+		// Use hostname from config as fallback
+		cfg := config.GetConfig()
+		if cfg.ClientHostname != "" {
+			serverName = cfg.ClientHostname
+		} else {
+			serverName = "localhost"
+		}
+	}
+
+	// Create TLS config with server name
+	tlsConfig := &tls.Config{
+		ServerName:         serverName,
+		InsecureSkipVerify: false,            // Don't skip verification for security
+		MinVersion:         tls.VersionTLS12, // Require TLS 1.2 or higher
+	}
+
+	// Perform TLS handshake immediately (SMTPS - TLS from the start)
+	tlsConn := tls.Client(conn, tlsConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("TLS handshake failed: %w", err)
+	}
+
+	return tlsConn, nil
+}
+
 // NewClientConnDialSMTP is a convenience function that dials SMTP and creates a client connection
 // This automatically stores the hostname for proper SNI in TLS (required for Gmail and others)
+// Uses STARTTLS on port 587 (or specified port)
 // Usage: client, err := NewClientConnDialSMTP("smtp.gmail.com", mail)
 func NewClientConnDialSMTP(host string, mail mail.Mail, port ...uint16) (*ClientConn, error) {
 	conn, err := DialSMTP(host, port...)
 	if err != nil {
 		return nil, err
 	}
+	return NewClientConnFromHost(host, conn, mail)
+}
+
+// NewClientConnDialSMTPS is a convenience function that dials SMTPS (direct TLS) and creates a client connection
+// This uses direct TLS connection on port 465 (SMTPS - secure submission)
+// The connection starts with TLS from the beginning (no STARTTLS needed)
+// Usage: client, err := NewClientConnDialSMTPS("smtp.gmail.com", mail)
+func NewClientConnDialSMTPS(host string, mail mail.Mail, port ...uint16) (*ClientConn, error) {
+	conn, err := DialSMTPS(host, port...)
+	if err != nil {
+		return nil, err
+	}
+	// For SMTPS, the connection is already TLS-wrapped
+	// sendEHLOWithTLS will detect this and skip STARTTLS
 	return NewClientConnFromHost(host, conn, mail)
 }
 
@@ -393,10 +467,17 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) error {
 		break
 	}
 
-	// Check if STARTTLS is supported and use it if available (only if allowTLS is true)
+	// Check if connection is already TLS (SMTPS - direct TLS connection)
+	// If connection is already TLS-wrapped, skip STARTTLS
+	isAlreadyTLS := false
+	if _, ok := c.conn.(*tls.Conn); ok {
+		isAlreadyTLS = true
+	}
+
+	// Check if STARTTLS is supported and use it if available (only if allowTLS is true and not already TLS)
 	// After STARTTLS, we send EHLO again but don't check for STARTTLS again
 	// Many modern SMTP servers (like Gmail) require or strongly prefer STARTTLS
-	if allowTLS {
+	if allowTLS && !isAlreadyTLS {
 		supportsSTARTTLS := false
 		for _, ext := range extensions {
 			// Check for STARTTLS extension (case-insensitive)
@@ -415,7 +496,8 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) error {
 				// The ServerName should match the MX hostname
 				c.tlsConfig = &tls.Config{
 					ServerName:         c.serverName,
-					InsecureSkipVerify: false, // Don't skip verification for security
+					InsecureSkipVerify: false,            // Don't skip verification for security
+					MinVersion:         tls.VersionTLS12, // Require TLS 1.2 or higher
 				}
 			}
 			if err := c.sendSTARTTLS(); err != nil {
