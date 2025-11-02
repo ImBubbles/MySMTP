@@ -1,16 +1,17 @@
 package smtp
 
 import (
-	"github.com/ImBubbles/MySMTP/config"
-	"github.com/ImBubbles/MySMTP/mail"
-	"github.com/ImBubbles/MySMTP/smtp/protocol"
-	"github.com/ImBubbles/MySMTP/util/conn"
 	"bufio"
 	"crypto/tls"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+
+	"github.com/ImBubbles/MySMTP/config"
+	"github.com/ImBubbles/MySMTP/mail"
+	"github.com/ImBubbles/MySMTP/smtp/protocol"
+	"github.com/ImBubbles/MySMTP/util/conn"
 )
 
 // ClientConn handle client-side SMTP connections to send emails
@@ -50,6 +51,29 @@ func NewClientConn(conn net.Conn, mail mail.Mail) *ClientConn {
 // SetTLSConfig sets the TLS configuration for STARTTLS
 func (c *ClientConn) SetTLSConfig(config *tls.Config) {
 	c.tlsConfig = config
+}
+
+// NewClientConnFromJSON creates a new client connection from JSON bytes
+// This is a convenience function to easily create a ClientConn from JSON (e.g., from a backend API)
+func NewClientConnFromJSON(conn net.Conn, jsonBytes []byte) (*ClientConn, error) {
+	mail, err := mail.FromJSON(jsonBytes)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientConn(conn, *mail), nil
+}
+
+// NewClientConnFromJSONString creates a new client connection from a JSON string
+// This is a convenience function to easily create a ClientConn from a JSON string
+func NewClientConnFromJSONString(conn net.Conn, jsonStr string) (*ClientConn, error) {
+	return NewClientConnFromJSON(conn, []byte(jsonStr))
+}
+
+// NewClientConnFromJSONMail creates a new client connection from a JSONMail struct
+// This is a convenience function to easily create a ClientConn from a JSONMail
+func NewClientConnFromJSONMail(conn net.Conn, jsonMail *mail.JSONMail) *ClientConn {
+	mail := jsonMail.ToMail()
+	return NewClientConn(conn, *mail)
 }
 
 func (c *ClientConn) handle() {
