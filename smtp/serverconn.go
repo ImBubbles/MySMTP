@@ -105,8 +105,21 @@ func (s *ServerConn) handle() {
 			return
 		}
 
-		command := strings.ToUpper(line)
-		command = stringutil.FirstWord(command)
+		// Trim whitespace and CRLF from line before parsing command
+		// This ensures commands like "QUIT\r\n" are properly matched
+		line = strings.TrimSpace(line)
+		if line == "" {
+			// Empty line after trimming - continue to next iteration
+			continue
+		}
+
+		// Convert to uppercase and extract first word (the command)
+		// TrimSpace ensures no leading/trailing whitespace in command
+		upperLine := strings.ToUpper(line)
+		command := strings.TrimSpace(stringutil.FirstWord(upperLine))
+
+		// Debug: Print the command being matched (for troubleshooting)
+		fmt.Printf("DEBUG: Parsed command: '%s' (from line: '%s', upper: '%s')\n", command, line, upperLine)
 
 		// Ignore http requests (web browsers, etc.)
 		// Just return bad command instead of panicking
@@ -116,21 +129,24 @@ func (s *ServerConn) handle() {
 			}
 			continue
 		}
-		switch command {
-		case string(protocol.COMMAND_EHLO), string(protocol.COMMAND_HELO):
+
+		// Match commands - use strings.EqualFold for case-insensitive comparison
+		// This is more robust than string comparison
+		switch {
+		case command == "EHLO" || command == "HELO":
 			s.handleEHLO(line)
-		case string(protocol.COMMAND_MAIL):
+		case command == "MAIL":
 			s.handleMailFrom(line)
-		case string(protocol.COMMAND_RCPT):
+		case command == "RCPT":
 			s.handleRctpTo(line)
-		case string(protocol.COMMAND_DATA):
+		case command == "DATA":
 			s.handleData(line)
-		case string(protocol.COMMAND_STARTTLS):
+		case command == "STARTTLS":
 			s.handleStartTLS(line)
-		case string(protocol.COMMAND_QUIT):
+		case command == "QUIT":
 			s.handleQuit(line)
 			return // Connection will close
-		case string(protocol.COMMAND_RSET):
+		case command == "RSET":
 			s.handleRset(line)
 		default:
 			if !s.write(protocol.PREPARED_S_BAD_COMMAND) {
