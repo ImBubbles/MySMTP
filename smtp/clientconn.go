@@ -413,6 +413,8 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) error {
 	// SMTP multi-line responses use "-" as 4th character for continuation
 	// Final line has space (or sometimes nothing) as 4th character
 	extensions := make([]string, 0)
+	firstResponseLine := ""
+	serverHostname := ""
 
 	for {
 		response, err := c.read()
@@ -421,6 +423,11 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) error {
 		}
 		if response == "" {
 			return errors.New("EHLO failed: empty response")
+		}
+
+		// Store first response line to extract server hostname
+		if firstResponseLine == "" {
+			firstResponseLine = response
 		}
 
 		code := c.parseResponseCode(response)
@@ -465,6 +472,26 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) error {
 
 		// Safety: if we got here, break to avoid infinite loop
 		break
+	}
+
+	// Extract server hostname from first EHLO response line
+	// Format: "250-hostname Hello client" or "250 hostname Hello client"
+	// The server hostname is usually the first word after the response code
+	if firstResponseLine != "" && len(firstResponseLine) > 4 {
+		// Skip response code (3 digits) and separator (- or space)
+		remainder := strings.TrimSpace(firstResponseLine[4:])
+		// Find first space (hostname ends at "Hello" or similar word)
+		if spaceIdx := strings.Index(remainder, " "); spaceIdx > 0 {
+			serverHostname = strings.TrimSpace(remainder[:spaceIdx])
+		} else if spaceIdx == -1 {
+			// No space found, use entire remainder (shouldn't happen but be safe)
+			serverHostname = remainder
+		}
+		// Store server hostname for TLS verification
+		// This ensures ServerName matches the certificate (e.g., mx.google.com)
+		if serverHostname != "" && c.serverName == "" {
+			c.serverName = serverHostname
+		}
 	}
 
 	// Check if connection is already TLS (SMTPS - direct TLS connection)
@@ -539,8 +566,8 @@ func (c *ClientConn) sendSTARTTLS() error {
 
 	// Perform TLS handshake
 	// Determine server name for TLS SNI (Server Name Indication)
-	// For Gmail and other modern SMTP servers, the ServerName must match the MX hostname
-	// Priority: 1) serverName (explicitly set), 2) serverHost (from DialSMTP), 3) connection address
+	// Priority: 1) serverName (explicitly set, may be extracted from EHLO), 2) serverHost (from DialSMTP), 3) connection address
+	// For Gmail and other modern SMTP servers, ServerName must match the certificate hostname (e.g., mx.google.com)
 	serverName := c.serverName
 	if serverName == "" {
 		// Use the server host from DialSMTP if available
@@ -574,9 +601,11 @@ func (c *ClientConn) sendSTARTTLS() error {
 	tlsConfig := c.tlsConfig
 	if tlsConfig == nil {
 		// Use default TLS config if none provided
+		// For Gmail and others, ServerName should match the certificate (extracted from EHLO)
 		tlsConfig = &tls.Config{
 			ServerName:         serverName,
 			InsecureSkipVerify: false,
+			MinVersion:         tls.VersionTLS12, // Require TLS 1.2 or higher
 		}
 	} else if tlsConfig.ServerName == "" {
 		// Clone config fields without copying mutex - create new config
@@ -594,6 +623,10 @@ func (c *ClientConn) sendSTARTTLS() error {
 			Certificates:             tlsConfig.Certificates,
 			GetCertificate:           tlsConfig.GetCertificate,
 			GetClientCertificate:     tlsConfig.GetClientCertificate,
+		}
+		// Ensure MinVersion if not set
+		if tlsConfig.MinVersion == 0 {
+			tlsConfig.MinVersion = tls.VersionTLS12
 		}
 	}
 
