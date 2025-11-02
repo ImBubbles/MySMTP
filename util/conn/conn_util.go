@@ -7,8 +7,18 @@ import (
 )
 
 func Write(conn *net.Conn, str string) error {
-	_, err := (*conn).Write([]byte(str))
-	return err
+	data := []byte(str)
+	// Write all bytes - Write() may write only part of the data
+	// Loop until all bytes are written or an error occurs
+	for len(data) > 0 {
+		n, err := (*conn).Write(data)
+		if err != nil {
+			return err
+		}
+		// Move forward in the data slice
+		data = data[n:]
+	}
+	return nil
 }
 
 func NewReader(conn *net.Conn) *bufio.Reader {
