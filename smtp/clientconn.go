@@ -26,6 +26,7 @@ type ClientConn struct {
 	tlsConfig  *tls.Config
 	hostname   string // Client hostname (for EHLO)
 	serverName string // Server hostname (for TLS SNI)
+	serverHost string // Server host from DialSMTP (for SNI fallback)
 }
 
 func NewClientConn(conn net.Conn, mail mail.Mail) (*ClientConn, error) {
@@ -42,14 +43,32 @@ func NewClientConn(conn net.Conn, mail mail.Mail) (*ClientConn, error) {
 	}
 
 	clientConn := &ClientConn{
-		conn:     conn,
-		state:    protocol.STATE_EHLO,
-		reader:   bufio.NewReader(conn),
-		mail:     mail,
-		hostname: hostname,
+		conn:       conn,
+		state:      protocol.STATE_EHLO,
+		reader:     bufio.NewReader(conn),
+		mail:       mail,
+		hostname:   hostname,
+		serverHost: "", // Will be set if using NewClientConnFromHost
 	}
 	err := clientConn.handle()
 	return clientConn, err
+}
+
+// NewClientConnFromHost creates a new client connection and stores the server hostname
+// This is useful for Gmail and other SMTP servers that require proper SNI in TLS
+// The host parameter should be the SMTP server hostname (e.g., "smtp.gmail.com")
+func NewClientConnFromHost(host string, conn net.Conn, mail mail.Mail) (*ClientConn, error) {
+	client, err := NewClientConn(conn, mail)
+	if err != nil {
+		return nil, err
+	}
+	// Store the server host for SNI fallback if ServerName is not explicitly set
+	client.serverHost = host
+	// If ServerName is not set, use the host for SNI
+	if client.serverName == "" {
+		client.serverName = host
+	}
+	return client, nil
 }
 
 // SetTLSConfig sets the TLS configuration for STARTTLS
@@ -86,11 +105,24 @@ func NewClientConnFromJSONMail(conn net.Conn, jsonMail *mail.JSONMail) (*ClientC
 	return NewClientConn(conn, *mail)
 }
 
+// NewClientConnFromHostAndJSON creates a new client connection from host and JSON bytes
+// This stores the server hostname for proper SNI in TLS (required for Gmail and others)
+// The host parameter should be the SMTP server hostname (e.g., "smtp.gmail.com")
+func NewClientConnFromHostAndJSON(host string, conn net.Conn, jsonBytes []byte) (*ClientConn, error) {
+	mail, err := mail.FromJSON(jsonBytes)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientConnFromHost(host, conn, *mail)
+}
+
 // DialSMTP creates a TCP connection to an SMTP server
 // It uses port 587 by default (submission port with STARTTLS), which is preferred over port 25
 // Port 25 is often blocked by ISPs and is mainly used for server-to-server communication
 // You can specify a custom port, or use the configured SMTP_CLIENT_PORT (default 587)
 // Returns a net.Conn ready for use with NewClientConn
+// IMPORTANT: For Gmail and other modern SMTP servers, use NewClientConnFromHost() or
+// NewClientConnDialSMTP() instead to ensure proper SNI for TLS
 func DialSMTP(host string, port ...uint16) (net.Conn, error) {
 	var smtpPort uint16
 
@@ -119,6 +151,17 @@ func DialSMTP(host string, port ...uint16) (net.Conn, error) {
 	}
 
 	return conn, nil
+}
+
+// NewClientConnDialSMTP is a convenience function that dials SMTP and creates a client connection
+// This automatically stores the hostname for proper SNI in TLS (required for Gmail and others)
+// Usage: client, err := NewClientConnDialSMTP("smtp.gmail.com", mail)
+func NewClientConnDialSMTP(host string, mail mail.Mail, port ...uint16) (*ClientConn, error) {
+	conn, err := DialSMTP(host, port...)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientConnFromHost(host, conn, mail)
 }
 
 func (c *ClientConn) handle() error {
@@ -179,21 +222,32 @@ func (c *ClientConn) handle() error {
 func (c *ClientConn) write(str string) error {
 	// Update write deadline before each write (net.Conn interface supports SetWriteDeadline)
 	c.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	_, err := c.conn.Write([]byte(str))
-	if err != nil {
-		// Handle broken pipe and connection errors gracefully
-		// Check for syscall.EPIPE (broken pipe) or other connection errors
-		if netErr, ok := err.(*net.OpError); ok {
-			return fmt.Errorf("write error (connection broken): %w", netErr)
-		}
-		// Check for syscall errors (broken pipe on Unix, or other syscall errors)
-		if sysErr, ok := err.(*os.SyscallError); ok {
-			if sysErr.Err == syscall.EPIPE {
-				return fmt.Errorf("write error (broken pipe): %w", sysErr)
+
+	// Debug: Print what we're sending (trim \r\n for cleaner output)
+	output := strings.TrimRight(str, "\r\n")
+	fmt.Printf("CLIENT -> SERVER: %s\n", output)
+
+	// Ensure all bytes are written (handle partial writes)
+	data := []byte(str)
+	for len(data) > 0 {
+		n, err := c.conn.Write(data)
+		if err != nil {
+			// Handle broken pipe and connection errors gracefully
+			// Check for syscall.EPIPE (broken pipe) or other connection errors
+			if netErr, ok := err.(*net.OpError); ok {
+				return fmt.Errorf("write error (connection broken): %w", netErr)
 			}
+			// Check for syscall errors (broken pipe on Unix, or other syscall errors)
+			if sysErr, ok := err.(*os.SyscallError); ok {
+				if sysErr.Err == syscall.EPIPE {
+					return fmt.Errorf("write error (broken pipe): %w", sysErr)
+				}
+			}
+			// For any other write error, return it
+			return fmt.Errorf("write error: %w", err)
 		}
-		// For any other write error, return it
-		return fmt.Errorf("write error: %w", err)
+		// Move forward in the data slice
+		data = data[n:]
 	}
 	return nil
 }
@@ -202,18 +256,40 @@ func (c *ClientConn) read() (string, error) {
 	// Update read deadline before each read (net.Conn interface supports SetReadDeadline)
 	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	response := conn.Read(c.reader)
+
+	// Debug: Print what we're receiving (trim \r\n for cleaner output)
+	output := strings.TrimRight(response, "\r\n")
+	fmt.Printf("CLIENT <- SERVER: %s\n", output)
+
+	// Check for empty response (connection closed)
 	if response == "" {
 		return "", errors.New("read error: empty response (connection may have closed)")
 	}
+
+	// Check for blank line (just CRLF or whitespace)
+	// Blank lines from server are unexpected except in DATA phase
+	trimmed := strings.TrimSpace(response)
+	if trimmed == "" {
+		// This is a blank line - log it for debugging
+		fmt.Fprintf(os.Stderr, "CLIENT: Received blank line (connection may be closing)\n")
+		return "", errors.New("read error: blank response (server sent empty line)")
+	}
+
 	return response, nil
 }
 
 // isSuccessCode checks if the response code matches the expected code
 func (c *ClientConn) isSuccessCode(response string, expectedCode protocol.SMTPCode) bool {
 	// Response format: "250 OK\r\n" or "220 Service Ready\r\n"
-	response = strings.TrimSpace(response)
-	if len(response) >= 3 {
-		codeStr := response[:3]
+	trimmed := strings.TrimSpace(response)
+
+	// Check for blank response
+	if trimmed == "" {
+		return false
+	}
+
+	if len(trimmed) >= 3 {
+		codeStr := trimmed[:3]
 		var code protocol.SMTPCode
 		fmt.Sscanf(codeStr, "%d", &code)
 		return code == expectedCode
@@ -223,10 +299,16 @@ func (c *ClientConn) isSuccessCode(response string, expectedCode protocol.SMTPCo
 
 // parseResponseCode extracts the response code from server response
 func (c *ClientConn) parseResponseCode(response string) protocol.SMTPCode {
-	response = strings.TrimSpace(response)
-	if len(response) >= 3 {
+	trimmed := strings.TrimSpace(response)
+
+	// Check for blank response
+	if trimmed == "" {
+		return protocol.CODE_INTERNAL_SERVER_ERROR
+	}
+
+	if len(trimmed) >= 3 {
 		var code protocol.SMTPCode
-		fmt.Sscanf(response[:3], "%d", &code)
+		fmt.Sscanf(trimmed[:3], "%d", &code)
 		return code
 	}
 	return protocol.CODE_INTERNAL_SERVER_ERROR
@@ -305,23 +387,27 @@ func (c *ClientConn) sendEHLOWithTLS(allowTLS bool) error {
 
 	// Check if STARTTLS is supported and use it if available (only if allowTLS is true)
 	// After STARTTLS, we send EHLO again but don't check for STARTTLS again
+	// Many modern SMTP servers (like Gmail) require or strongly prefer STARTTLS
 	if allowTLS {
 		supportsSTARTTLS := false
 		for _, ext := range extensions {
-			if strings.Contains(ext, "STARTTLS") {
+			// Check for STARTTLS extension (case-insensitive)
+			if strings.Contains(strings.ToUpper(ext), "STARTTLS") {
 				supportsSTARTTLS = true
 				break
 			}
 		}
 
 		// If STARTTLS is available, use it
-		// Create default TLS config if none provided (required for many modern SMTP servers)
+		// Create default TLS config if none provided (required for many modern SMTP servers like Gmail)
 		if supportsSTARTTLS {
 			if c.tlsConfig == nil {
 				// Create default TLS config for STARTTLS
+				// For Gmail and other modern SMTP servers, we need proper ServerName
+				// The ServerName should match the MX hostname
 				c.tlsConfig = &tls.Config{
 					ServerName:         c.serverName,
-					InsecureSkipVerify: false,
+					InsecureSkipVerify: false, // Don't skip verification for security
 				}
 			}
 			if err := c.sendSTARTTLS(); err != nil {
@@ -363,22 +449,34 @@ func (c *ClientConn) sendSTARTTLS() error {
 
 	// Perform TLS handshake
 	// Determine server name for TLS SNI (Server Name Indication)
-	// Use serverName if set, otherwise try to extract from connection
+	// For Gmail and other modern SMTP servers, the ServerName must match the MX hostname
+	// Priority: 1) serverName (explicitly set), 2) serverHost (from DialSMTP), 3) connection address
 	serverName := c.serverName
 	if serverName == "" {
-		// Try to get hostname from connection's remote address
-		if addr := c.conn.RemoteAddr(); addr != nil {
-			// For TLS, we typically want the hostname, not IP
-			// Extract hostname from network address (format: "hostname:port" or "ip:port")
-			addrStr := addr.String()
-			if colonIdx := strings.LastIndex(addrStr, ":"); colonIdx > 0 {
-				serverName = addrStr[:colonIdx]
-				// If it's an IP, we might need to resolve it, but for TLS SNI we prefer hostname
-				// For now, use what we have - the caller should set serverName if needed
+		// Use the server host from DialSMTP if available
+		if c.serverHost != "" {
+			serverName = c.serverHost
+		} else {
+			// Try to get hostname from connection's remote address
+			if addr := c.conn.RemoteAddr(); addr != nil {
+				// For TLS SNI, we need the hostname, not the IP
+				addrStr := addr.String()
+				if colonIdx := strings.LastIndex(addrStr, ":"); colonIdx > 0 {
+					hostPart := addrStr[:colonIdx]
+					// Check if it's an IP address
+					if net.ParseIP(hostPart) != nil {
+						// It's an IP - we can't use it for SNI
+						// Use hostname as fallback (but this won't work well for Gmail)
+						serverName = c.hostname
+					} else {
+						// It's a hostname - use it for SNI
+						serverName = hostPart
+					}
+				}
 			}
-		}
-		if serverName == "" {
-			serverName = c.hostname
+			if serverName == "" {
+				serverName = c.hostname
+			}
 		}
 	}
 

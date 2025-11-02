@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/ImBubbles/MySMTP/config"
 	"github.com/ImBubbles/MySMTP/mail"
@@ -128,21 +129,31 @@ func (s *ServerConn) handle() {
 }
 
 func (s *ServerConn) write(str string) bool {
+	// Set write deadline to prevent indefinite blocking
+	(*s.client).SetWriteDeadline(time.Now().Add(30 * time.Second))
+
 	// Print transmission to client (trim \r\n for cleaner output)
 	output := strings.TrimRight(str, "\r\n")
 	fmt.Printf("SERVER -> CLIENT: %s\n", output)
+
 	err := conn.Write(s.client, str)
 	if err != nil {
 		// Handle broken pipe and connection errors gracefully
-		// Check for syscall.EPIPE (broken pipe) or other connection errors
+		// Broken pipe usually means client closed connection - this is normal, don't log as error
 		if netErr, ok := err.(*net.OpError); ok {
+			// Check if it's a broken pipe (EPIPE) - this is normal when client closes
+			if sysErr, ok := netErr.Err.(*os.SyscallError); ok && sysErr.Err == syscall.EPIPE {
+				// Client closed connection - this is expected, just return false
+				return false
+			}
+			// Other network errors - log but don't treat as critical
 			fmt.Fprintf(os.Stderr, "SERVER: Write error (connection broken): %v\n", netErr)
 			return false
 		}
 		// Check for syscall errors (broken pipe on Unix, or other syscall errors)
 		if sysErr, ok := err.(*os.SyscallError); ok {
 			if sysErr.Err == syscall.EPIPE {
-				fmt.Fprintf(os.Stderr, "SERVER: Write error (broken pipe): %v\n", sysErr)
+				// Client closed connection - this is expected
 				return false
 			}
 		}
@@ -154,10 +165,20 @@ func (s *ServerConn) write(str string) bool {
 }
 
 func (s *ServerConn) read() string {
+	// Set read deadline to prevent indefinite blocking
+	// SMTP servers should wait for client commands, but we need timeouts to handle dead connections
+	(*s.client).SetReadDeadline(time.Now().Add(30 * time.Second))
+
 	line := conn.Read(s.reader)
+
 	// Print transmission from client (trim \r\n for cleaner output)
 	output := strings.TrimRight(line, "\r\n")
-	fmt.Printf("SERVER <- CLIENT: %s\n", output)
+	if line != "" {
+		fmt.Printf("SERVER <- CLIENT: %s\n", output)
+	} else {
+		fmt.Printf("SERVER <- CLIENT: (empty - connection closed)\n")
+	}
+
 	return line
 }
 
@@ -188,6 +209,14 @@ func (s *ServerConn) handleEHLO(line string) {
 	}
 
 	// Additional continuation lines: 250-<extension>
+
+	// Advertise STARTTLS if TLS is configured (required by Gmail and many modern SMTP clients)
+	if s.tlsConfig != nil {
+		if !s.write("250-STARTTLS\r\n") {
+			return
+		}
+	}
+
 	if s.relay {
 		// 250-AUTH <method>
 		if !s.write("250-AUTH PLAIN LOGIN\r\n") {
