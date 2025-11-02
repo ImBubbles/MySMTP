@@ -116,6 +116,9 @@ func (s *ServerConn) handle() {
 }
 
 func (s *ServerConn) write(str string) {
+	// Print transmission to client (trim \r\n for cleaner output)
+	output := strings.TrimRight(str, "\r\n")
+	fmt.Printf("SERVER -> CLIENT: %s\n", output)
 	err := conn.Write(s.client, str)
 	if err != nil {
 		panic(err)
@@ -123,7 +126,11 @@ func (s *ServerConn) write(str string) {
 }
 
 func (s *ServerConn) read() string {
-	return conn.Read(s.reader)
+	line := conn.Read(s.reader)
+	// Print transmission from client (trim \r\n for cleaner output)
+	output := strings.TrimRight(line, "\r\n")
+	fmt.Printf("SERVER <- CLIENT: %s\n", output)
+	return line
 }
 
 func (s *ServerConn) handleEHLO(line string) {
