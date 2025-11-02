@@ -1,6 +1,6 @@
 package smtp
 
-import "MySMTP/mail"
+import "github.com/ImBubbles/MySMTP/mail"
 
 // MailHandler is a function that processes a completed email
 // Return an error to reject the email, or nil to accept it

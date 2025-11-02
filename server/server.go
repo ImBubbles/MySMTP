@@ -1,8 +1,8 @@
 package server
 
 import (
-	"MySMTP/config"
-	"MySMTP/smtp"
+	"github.com/ImBubbles/MySMTP/config"
+	"github.com/ImBubbles/MySMTP/smtp"
 	"fmt"
 	"net"
 	"os"

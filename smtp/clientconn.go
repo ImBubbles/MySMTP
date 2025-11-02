@@ -1,10 +1,10 @@
 package smtp
 
 import (
-	"MySMTP/config"
-	"MySMTP/mail"
-	"MySMTP/smtp/protocol"
-	"MySMTP/util/conn"
+	"github.com/ImBubbles/MySMTP/config"
+	"github.com/ImBubbles/MySMTP/mail"
+	"github.com/ImBubbles/MySMTP/smtp/protocol"
+	"github.com/ImBubbles/MySMTP/util/conn"
 	"bufio"
 	"crypto/tls"
 	"fmt"

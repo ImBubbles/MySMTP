@@ -1,19 +1,19 @@
 package smtp
 
 import (
-	"MySMTP/config"
-	"MySMTP/mail"
-	"MySMTP/util/conn"
-	smtputil "MySMTP/util/smtp"
-	stringutil "MySMTP/util/string"
-	"MySMTP/util/verify"
+	"github.com/ImBubbles/MySMTP/config"
+	"github.com/ImBubbles/MySMTP/mail"
+	"github.com/ImBubbles/MySMTP/util/conn"
+	smtputil "github.com/ImBubbles/MySMTP/util/smtp"
+	stringutil "github.com/ImBubbles/MySMTP/util/string"
+	"github.com/ImBubbles/MySMTP/util/verify"
 	"bufio"
 	"crypto/tls"
 	"fmt"
 	"net"
 	"strings"
 )
-import "MySMTP/smtp/protocol"
+import "github.com/ImBubbles/MySMTP/smtp/protocol"
 
 // ServerConn handle client connections to the SMTP server
 type ServerConn struct {

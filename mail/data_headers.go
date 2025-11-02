@@ -1,7 +1,7 @@
 package mail
 
 import (
-	"MySMTP/util/smtp"
+	"github.com/ImBubbles/MySMTP/util/smtp"
 	"strings"
 )
 

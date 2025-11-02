@@ -6,8 +6,8 @@
 // Example server usage:
 //
 //	import (
-//		"MySMTP/smtp"
-//		"MySMTP/mail"
+//		"github.com/ImBubbles/MySMTP/smtp"
+//		"github.com/ImBubbles/MySMTP/mail"
 //		"net"
 //	)
 //

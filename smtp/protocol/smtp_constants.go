@@ -1,6 +1,6 @@
 package protocol
 
-import "MySMTP/util/arraylist"
+import "github.com/ImBubbles/MySMTP/util/arraylist"
 
 type SMTPCode int16
 

@@ -1,7 +1,7 @@
 package protocol
 
 import (
-	string2 "MySMTP/util/string"
+	string2 "github.com/ImBubbles/MySMTP/util/string"
 )
 
 // Server messaging
