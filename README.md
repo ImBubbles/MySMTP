@@ -2,6 +2,16 @@
 
 SMTP server and client implementation in Go.
 
+## Installation
+
+To use this library in your Go project:
+
+```bash
+go get github.com/yourusername/MySMTP@latest
+```
+
+Replace `yourusername` with your GitHub username. See [USAGE.md](USAGE.md) for detailed usage instructions.
+
 ## Configuration
 
 The application uses environment variables for configuration. You can either:
