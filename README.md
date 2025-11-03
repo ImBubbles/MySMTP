@@ -7,10 +7,14 @@ SMTP server and client implementation in Go.
 To use this library in your Go project:
 
 ```bash
-go get github.com/yourusername/MySMTP@latest
+go get github.com/ImBubbles/MySMTP@latest
 ```
 
-Replace `yourusername` with your GitHub username. See [USAGE.md](USAGE.md) for detailed usage instructions.
+or
+
+```bash
+go get github.com/ImBubbles/MySMTP@<version>
+```
 
 ## Configuration
 
